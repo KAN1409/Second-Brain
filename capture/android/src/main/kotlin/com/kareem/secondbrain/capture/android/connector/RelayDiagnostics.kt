@@ -14,6 +14,12 @@ data class RelayFilterDecision(
     val reason: String,
 )
 
+data class RelayMessageSnapshot(
+    val sender: String?,
+    val text: String,
+    val occurredAt: Instant?,
+)
+
 data class RelayRecentSignal(
     val eventId: String,
     val occurredAt: Instant,
@@ -22,6 +28,11 @@ data class RelayRecentSignal(
     val packageName: String,
     val title: String?,
     val preview: String?,
+    val body: String? = null,
+    val expandedText: String? = null,
+    val conversationTitle: String? = null,
+    val messages: List<RelayMessageSnapshot> = emptyList(),
+    val metadataJson: String? = null,
     val filterState: RelayFilterState? = null,
     val filterReason: String? = null,
     val deliveryState: RelayDeliveryState = RelayDeliveryState.CAPTURED,
@@ -73,6 +84,11 @@ object RelayRuntimeDiagnostics {
         occurredAt: Instant,
         title: String?,
         preview: String?,
+        body: String?,
+        expandedText: String?,
+        conversationTitle: String?,
+        messages: List<RelayMessageSnapshot>,
+        metadataJson: String?,
     ) = update { current ->
         val now = Instant.now()
         current.copy(
@@ -89,6 +105,11 @@ object RelayRuntimeDiagnostics {
                     packageName = packageName,
                     title = title?.takeIf(String::isNotBlank),
                     preview = preview?.takeIf(String::isNotBlank),
+                    body = body?.takeIf(String::isNotBlank),
+                    expandedText = expandedText?.takeIf(String::isNotBlank),
+                    conversationTitle = conversationTitle?.takeIf(String::isNotBlank),
+                    messages = messages.takeLast(24),
+                    metadataJson = metadataJson?.takeIf(String::isNotBlank),
                 ),
             ),
         )
@@ -160,6 +181,7 @@ object RelayRuntimeDiagnostics {
             lastCortexStatus = status,
             lastCortexSignalId = signalId,
             lastAckAt = now,
+            lastError = null,
             lastActivityAt = now,
             recentSignals = mutate(current.recentSignals, eventId) { signal ->
                 signal.copy(
