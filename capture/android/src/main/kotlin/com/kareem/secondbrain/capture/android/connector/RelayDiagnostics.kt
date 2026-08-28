@@ -67,6 +67,7 @@ data class RelayDiagnosticSnapshot(
     val lifecycleRemoved: Long = 0,
     val duplicateUpdatesSuppressed: Long = 0,
     val machineChurnSuppressed: Long = 0,
+    val restoredPendingEventIds: List<String> = emptyList(),
     val connectionState: RelayConnectionState = RelayConnectionState.DISCONNECTED,
     val lastPackage: String? = null,
     val lastFilterState: RelayFilterState? = null,
@@ -89,6 +90,7 @@ data class RelayDiagnosticSnapshot(
  */
 object RelayRuntimeDiagnostics {
     private const val MAX_RECENT_SIGNALS = 20
+    private const val MAX_RESTORED_IDS = 128
 
     private val lock = Any()
     private val mutableState = MutableStateFlow(RelayDiagnosticSnapshot())
@@ -101,6 +103,14 @@ object RelayRuntimeDiagnostics {
             lifecycleRemoved = current.lifecycleRemoved + if (state == NotificationLifecycleState.REMOVED) 1 else 0,
             duplicateUpdatesSuppressed = current.duplicateUpdatesSuppressed + if (change == NotificationMeaningfulChange.EXACT_DUPLICATE) 1 else 0,
             machineChurnSuppressed = current.machineChurnSuppressed + if (change == NotificationMeaningfulChange.MACHINE_CHURN_ONLY) 1 else 0,
+            lastActivityAt = Instant.now(),
+        )
+    }
+
+    fun markRestoredPending(eventIds: List<String>, waiting: Int) = update { current ->
+        current.copy(
+            waiting = waiting,
+            restoredPendingEventIds = eventIds.take(MAX_RESTORED_IDS),
             lastActivityAt = Instant.now(),
         )
     }
@@ -216,6 +226,7 @@ object RelayRuntimeDiagnostics {
         current.copy(
             forwarded = current.forwarded + 1,
             waiting = waiting,
+            restoredPendingEventIds = current.restoredPendingEventIds.filterNot { it == eventId },
             lastCortexStatus = status,
             lastCortexSignalId = signalId,
             lastAckAt = now,
@@ -239,6 +250,7 @@ object RelayRuntimeDiagnostics {
         current.copy(
             rejected = current.rejected + 1,
             waiting = waiting,
+            restoredPendingEventIds = current.restoredPendingEventIds.filterNot { it == eventId },
             lastError = reason,
             lastCortexStatus = status,
             lastAckAt = now,
