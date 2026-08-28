@@ -45,6 +45,7 @@ class GroundedAskPrivacyTest {
                 ),
             ),
             aiProvider = provider,
+            cloudAiEnabled = { true },
         )
 
         val answer = repository.ask("When is the project review?")
@@ -68,6 +69,7 @@ class GroundedAskPrivacyTest {
                 mapOf("com.private.app" to AppCapturePolicy("com.private.app", allowAiUpload = false)),
             ),
             aiProvider = provider,
+            cloudAiEnabled = { true },
         )
 
         val answer = repository.ask("What did I save?")
@@ -75,6 +77,27 @@ class GroundedAskPrivacyTest {
         assertEquals(0, provider.callCount)
         assertTrue(answer.answer.contains("keep them local"))
         assertTrue(answer.evidence.single().cloudEligible.not())
+    }
+
+    @Test
+    fun ask_neverCallsProviderWhenGlobalCloudConsentIsOff() = runBlocking {
+        val allowed = memory("allowed", "com.allowed.app", "Project review is Wednesday at 3 PM.")
+        val provider = RecordingProvider()
+        val repository = GroundedAskRepository(
+            searchRepository = FakeSearchRepository(listOf(SearchHit("allowed", "chunk-allowed", allowed.body, 0.90))),
+            memoryRepository = FakeMemoryRepository(mapOf(allowed.id to allowed)),
+            policyRepository = FakePolicyRepository(
+                mapOf("com.allowed.app" to AppCapturePolicy("com.allowed.app", allowAiUpload = true)),
+            ),
+            aiProvider = provider,
+            cloudAiEnabled = { false },
+        )
+
+        val answer = repository.ask("When is the project review?")
+
+        assertEquals(0, provider.callCount)
+        assertTrue(answer.answer.contains("Cloud synthesis is off"))
+        assertFalse(answer.evidence.single().cloudEligible)
     }
 
     private fun memory(id: String, packageName: String, body: String) = Memory(
