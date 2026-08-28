@@ -19,12 +19,14 @@ import com.kareem.secondbrain.core.database.CaptureStateDao
 import com.kareem.secondbrain.core.database.CaptureWriteDao
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.core.database.MemoryDao
+import com.kareem.secondbrain.core.database.SearchDao
 import com.kareem.secondbrain.data.repository.RoomAppSessionRepository
 import com.kareem.secondbrain.data.repository.RoomAssetRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureHealthRepository
 import com.kareem.secondbrain.data.repository.RoomCapturePolicyRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureRepository
 import com.kareem.secondbrain.data.repository.RoomMemoryRepository
+import com.kareem.secondbrain.data.repository.RoomMemorySearchRepository
 import com.kareem.secondbrain.domain.AppSessionRepository
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureHealthRepository
@@ -32,6 +34,7 @@ import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.CaptureRepository
 import com.kareem.secondbrain.domain.EnrichmentScheduler
 import com.kareem.secondbrain.domain.MemoryRepository
+import com.kareem.secondbrain.domain.MemorySearchRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -57,6 +60,7 @@ object AppModule {
     @Provides fun provideMemoryDao(db: BrainDatabase): MemoryDao = db.memoryDao()
     @Provides fun provideAssetDao(db: BrainDatabase): AssetDao = db.assetDao()
     @Provides fun provideEnrichmentDao(db: BrainDatabase): EnrichmentDao = db.enrichmentDao()
+    @Provides fun provideSearchDao(db: BrainDatabase): SearchDao = db.searchDao()
 
     @Provides
     @Singleton
@@ -87,6 +91,11 @@ object AppModule {
     @Singleton
     fun provideMemoryRepository(memoryDao: MemoryDao): MemoryRepository =
         RoomMemoryRepository(memoryDao)
+
+    @Provides
+    @Singleton
+    fun provideMemorySearchRepository(searchDao: SearchDao): MemorySearchRepository =
+        RoomMemorySearchRepository(searchDao)
 
     @Provides
     @Singleton

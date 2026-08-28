@@ -29,4 +29,5 @@ abstract class BrainDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
     abstract fun assetDao(): AssetDao
     abstract fun enrichmentDao(): EnrichmentDao
+    abstract fun searchDao(): SearchDao
 }
