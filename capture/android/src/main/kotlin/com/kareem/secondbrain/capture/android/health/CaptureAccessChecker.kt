@@ -1,6 +1,7 @@
 package com.kareem.secondbrain.capture.android.health
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -26,7 +27,7 @@ class CaptureAccessChecker @Inject constructor(
 
     private fun accessibilityEnabled(): Boolean {
         val manager = context.getSystemService(AccessibilityManager::class.java)
-        return manager.getEnabledAccessibilityServiceList(AccessibilityManager.FEEDBACK_ALL_MASK)
+        return manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
             .any { info -> info.resolveInfo.serviceInfo.packageName == context.packageName }
     }
 

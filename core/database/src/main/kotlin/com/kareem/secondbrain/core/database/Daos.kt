@@ -35,6 +35,18 @@ interface CaptureEventDao {
 
     @Query("SELECT COUNT(*) FROM capture_event WHERE content_hash = :hash")
     suspend fun countByContentHash(hash: String): Int
+
+    @Query("SELECT COUNT(*) FROM capture_event WHERE source_type = :sourceType AND content_hash = :hash")
+    suspend fun countBySourceAndContentHash(sourceType: String, hash: String): Int
+
+    @Query("""
+        SELECT * FROM capture_event
+        WHERE source_type = :sourceType
+          AND asset_id = :assetId
+        ORDER BY occurred_at DESC
+        LIMIT 1
+    """)
+    suspend fun latestBySourceAndAssetId(sourceType: String, assetId: String): CaptureEventEntity?
 }
 
 /** Event + normalized Memory are committed together. */
@@ -46,10 +58,18 @@ abstract class CaptureWriteDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertMemory(memory: MemoryEntity)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    protected abstract suspend fun insertMemoryAsset(link: MemoryAssetEntity)
+
     @Transaction
-    open suspend fun insertCapture(event: CaptureEventEntity, memory: MemoryEntity) {
+    open suspend fun insertCapture(
+        event: CaptureEventEntity,
+        memory: MemoryEntity,
+        memoryAsset: MemoryAssetEntity? = null,
+    ) {
         insertEvent(event)
         insertMemory(memory)
+        memoryAsset?.let { insertMemoryAsset(it) }
     }
 }
 
@@ -187,4 +207,52 @@ interface MemoryDao {
 
     @Query("DELETE FROM memory WHERE id = :id")
     suspend fun delete(id: String)
+}
+
+
+@Dao
+interface AssetDao {
+    @Query("SELECT * FROM asset WHERE sha256 = :sha256 LIMIT 1")
+    suspend fun findBySha256(sha256: String): AssetEntity?
+
+    @Query("SELECT * FROM asset WHERE id = :id LIMIT 1")
+    suspend fun get(id: String): AssetEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(asset: AssetEntity)
+}
+
+@Dao
+interface EnrichmentDao {
+    @Query("SELECT * FROM capture_event WHERE id = :eventId LIMIT 1")
+    suspend fun getEvent(eventId: String): CaptureEventEntity?
+
+    @Query("SELECT * FROM memory WHERE source_event_id = :eventId LIMIT 1")
+    suspend fun getMemoryByEventId(eventId: String): MemoryEntity?
+
+    @Query("UPDATE capture_event SET processing_state = 'PROCESSING' WHERE id = :eventId")
+    suspend fun markProcessing(eventId: String)
+
+    @Query("UPDATE capture_event SET processing_state = 'FAILED', metadata_json = :metadataJson WHERE id = :eventId")
+    suspend fun markFailed(eventId: String, metadataJson: String?)
+
+    @Query("""
+        UPDATE capture_event
+        SET raw_text = :rawText,
+            normalized_text = :normalizedText,
+            content_hash = :contentHash,
+            metadata_json = :metadataJson,
+            processing_state = 'READY'
+        WHERE id = :eventId
+    """)
+    suspend fun markReady(
+        eventId: String,
+        rawText: String,
+        normalizedText: String,
+        contentHash: String,
+        metadataJson: String?,
+    )
+
+    @Query("UPDATE memory SET body = :body, updated_at = :updatedAt WHERE source_event_id = :eventId")
+    suspend fun updateMemoryBody(eventId: String, body: String, updatedAt: Long)
 }

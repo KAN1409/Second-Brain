@@ -1,6 +1,9 @@
 package com.kareem.secondbrain.capture.android.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.graphics.Bitmap
+import android.view.Display
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -14,6 +17,7 @@ import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CaptureHealthRepository
 import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.CaptureRepository
+import com.kareem.secondbrain.domain.EnrichmentScheduler
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
 import java.time.Instant
 import javax.inject.Inject
 
@@ -33,10 +38,12 @@ class BrainAccessibilityService : AccessibilityService() {
     @Inject lateinit var policyRepository: CapturePolicyRepository
     @Inject lateinit var appSessions: AppSessionRepository
     @Inject lateinit var healthRepository: CaptureHealthRepository
+    @Inject lateinit var enrichmentScheduler: EnrichmentScheduler
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var debounceJob: Job? = null
     @Volatile private var captureRunning = false
+    private val lastScreenshotOcrAt = mutableMapOf<String, Long>()
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_SCREEN_OFF || !captureRunning) return
@@ -108,7 +115,12 @@ class BrainAccessibilityService : AccessibilityService() {
             if (!policy.accessibility) return@launch
 
             val extracted = AccessibleTextExtractor.extract(root)
-            if (extracted.text.isBlank()) return@launch
+            if (extracted.text.length < 20) {
+                if (policy.ocr && extracted.passwordNodesSkipped == 0) {
+                    scheduleScreenshotOcr(activePackage)
+                }
+                return@launch
+            }
             val metadata = JSONObject().apply {
                 put("eventType", eventType)
                 put("className", eventClass ?: JSONObject.NULL)
@@ -127,6 +139,50 @@ class BrainAccessibilityService : AccessibilityService() {
                 ),
             )
         }
+    }
+
+    private fun scheduleScreenshotOcr(activePackage: String) {
+        val now = System.currentTimeMillis()
+        val previous = lastScreenshotOcrAt[activePackage] ?: 0L
+        if (now - previous < SCREENSHOT_OCR_THROTTLE_MS) return
+        lastScreenshotOcrAt[activePackage] = now
+
+        takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            mainExecutor,
+            object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    val hardwareBuffer = screenshot.hardwareBuffer
+                    val bitmap = try {
+                        Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshot.colorSpace)
+                            ?.copy(Bitmap.Config.ARGB_8888, false)
+                    } finally {
+                        hardwareBuffer.close()
+                    } ?: return
+                    val dir = File(cacheDir, "temporary-ocr").apply { mkdirs() }
+                    val file = File(dir, "screen-${activePackage.hashCode()}-$now.png")
+                    try {
+                        file.outputStream().use { output ->
+                            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                        }
+                    } catch (_: Throwable) {
+                        file.delete()
+                        return
+                    } finally {
+                        bitmap.recycle()
+                    }
+                    serviceScope.launch {
+                        enrichmentScheduler.enqueueTemporaryScreenshotOcr(
+                            packageName = activePackage,
+                            occurredAt = Instant.ofEpochMilli(now),
+                            absolutePath = file.absolutePath,
+                        )
+                    }
+                }
+
+                override fun onFailure(errorCode: Int) = Unit
+            },
+        )
     }
 
     private fun foregroundApplicationWindow(): AccessibilityWindowInfo? =
@@ -179,6 +235,7 @@ class BrainAccessibilityService : AccessibilityService() {
 
     private companion object {
         const val SCREEN_DEBOUNCE_MS = 750L
+        const val SCREENSHOT_OCR_THROTTLE_MS = 5_000L
         val SCREEN_EVENT_TYPES = setOf(
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,

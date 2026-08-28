@@ -2,7 +2,7 @@
 
 Local-first Android second-brain project implementing SPEC-1 / SPEC-1.1.
 
-Current checkpoint: **M1 Reliable Capture** (`0.2.0-m1-dev`).
+Current implementation branch: **M2 Multimodal Brain** (`0.3.0-m2-dev`).
 
 ## Implemented
 
@@ -17,6 +17,10 @@ Current checkpoint: **M1 Reliable Capture** (`0.2.0-m1-dev`).
 - Per-app policy storage and conservative sensitive-app defaults (notification + screen/OCR blocked by default).
 - Capture Health diagnostics.
 - Minimal live Timeline for M1 verification.
+- Content-addressed private asset storage with SHA-256 deduplication.
+- Explicit foreground voice recording + asynchronous local whisper.cpp transcription adapter.
+- Image/file Share + picker ingestion and ML Kit/Tesseract OCR pipeline.
+- Accessibility screenshot OCR fallback with temporary-image deletion.
 
 ## Build
 
@@ -40,4 +44,4 @@ Additional invariant:
 
 > No personal claim may outlive its evidence.
 
-See `docs/SPEC-1.1-DECISIONS.md`, `docs/ARCHITECTURE.md`, and `docs/M1-RELIABLE-CAPTURE.md`.
+See `docs/SPEC-1.1-DECISIONS.md`, `docs/ARCHITECTURE.md`, `docs/M1-RELIABLE-CAPTURE.md`, and `docs/M2-MULTIMODAL-BRAIN.md`.
