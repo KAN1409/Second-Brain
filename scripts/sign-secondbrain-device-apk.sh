@@ -46,12 +46,16 @@ printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KS_PASS"
 printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KEY_PASS"
 unset PASSWORD_VALUE
 
+# The app currently has minSdk 30. apksigner can therefore choose v3 alone even when
+# v2 is enabled. Use API 24 only as the signing compatibility floor so the APK carries
+# both v2 and v3. This does not change AndroidManifest minSdkVersion.
 "$APKSIGNER" sign \
   --ks "$KEYSTORE" \
   --ks-type PKCS12 \
   --ks-key-alias "$KEY_ALIAS" \
   --ks-pass "file:$TMP_KS_PASS" \
   --key-pass "file:$TMP_KEY_PASS" \
+  --min-sdk-version 24 \
   --v1-signing-enabled false \
   --v2-signing-enabled true \
   --v3-signing-enabled true \
@@ -59,7 +63,7 @@ unset PASSWORD_VALUE
   --out "$OUTPUT_APK" \
   "$INPUT_APK"
 
-VERIFY_OUTPUT="$($APKSIGNER verify --verbose --print-certs "$OUTPUT_APK")"
+VERIFY_OUTPUT="$($APKSIGNER verify --verbose --print-certs --min-sdk-version 24 "$OUTPUT_APK")"
 printf '%s\n' "$VERIFY_OUTPUT"
 
 printf '%s\n' "$VERIFY_OUTPUT" | grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' \
