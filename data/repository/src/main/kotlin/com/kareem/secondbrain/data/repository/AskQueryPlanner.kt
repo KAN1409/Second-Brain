@@ -27,7 +27,9 @@ internal data class AskSearchPlan(
 )
 
 internal object AskQueryPlanner {
-    private val twelveHourTime = Regex("(?i)\\b(1[0-2]|0?[1-9])(?::([0-5]\\d))?\\s*(am|pm)\\b")
+    private val twelveHourTime = Regex(
+        "(?i)\\b(1[0-2]|0?[1-9])(?::([0-5]\\d))?\\s*(a\\.?\\s*m\\.?|p\\.?\\s*m\\.?)(?=\\s|$|[?!,;])",
+    )
     private val twentyFourHourTime = Regex("\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b")
     private val yesterdayWords = Regex("(?i)\\b(yesterday)\\b|(?:أمبارح|امبارح)")
     private val todayWords = Regex("(?i)\\b(today)\\b|(?:النهاردة|اليوم)")
@@ -142,7 +144,10 @@ internal object AskQueryPlanner {
         twelveHourTime.find(question)?.let { match ->
             val hour12 = match.groupValues[1].toInt()
             val minute = match.groupValues[2].takeIf(String::isNotBlank)?.toInt() ?: 0
-            val suffix = match.groupValues[3].lowercase()
+            val suffix = match.groupValues[3]
+                .lowercase()
+                .replace(".", "")
+                .replace(" ", "")
             val hour24 = when {
                 suffix == "am" && hour12 == 12 -> 0
                 suffix == "pm" && hour12 != 12 -> hour12 + 12
