@@ -29,7 +29,7 @@ class GroundedClaimValidatorTest {
 
         assertEquals(1, result.size)
         assertEquals(listOf("E1"), result.single().claim.evidenceIds)
-        assertTrue(result.single().supportScore > 0.15)
+        assertTrue(result.single().supportScore >= 0.60)
     }
 
     @Test
@@ -46,6 +46,26 @@ class GroundedClaimValidatorTest {
     fun validate_dropsUnsupportedClaimEvenWithValidCitationId() {
         val result = GroundedClaimValidator.validate(
             claims = listOf(AiClaim("The restaurant serves excellent sushi near the beach.", listOf("E1"))),
+            evidence = listOf(evidence),
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun validate_dropsInventedNumber() {
+        val result = GroundedClaimValidator.validate(
+            claims = listOf(AiClaim("Sarah said Wednesday works for the project review at 5 PM.", listOf("E1"))),
+            evidence = listOf(evidence),
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun validate_dropsInventedNegation() {
+        val result = GroundedClaimValidator.validate(
+            claims = listOf(AiClaim("Sarah said Wednesday does not work for the project review.", listOf("E1"))),
             evidence = listOf(evidence),
         )
 
