@@ -25,6 +25,23 @@ data class AiAnswerResponse(
 data class SummaryRequest(val evidence: List<Evidence>)
 data class SummaryResponse(val summary: String, val citations: List<Citation>)
 
+/**
+ * Query planning is intentionally separate from answering.
+ * The model may suggest semantic search variants and soft source/type hints, but it cannot
+ * manufacture evidence or impose hard database constraints that were not explicit in the question.
+ */
+data class AiQueryPlanRequest(
+    val question: String,
+    val nowEpochMs: Long,
+    val zoneId: String,
+)
+
+data class AiQueryPlanResponse(
+    val semanticQueries: List<String> = emptyList(),
+    val softKindHints: List<String> = emptyList(),
+    val relationHints: List<String> = emptyList(),
+)
+
 class AiProviderUnavailableException(message: String) : IllegalStateException(message)
 
 interface Transcriber { suspend fun transcribe(asset: AudioAsset): Transcript }
@@ -36,6 +53,8 @@ interface Embedder {
     suspend fun embedDocuments(texts: List<String>): List<FloatArray> = embed(texts)
 }
 interface AiProvider {
+    /** Optional question-only planning pass. Default keeps existing providers source compatible. */
+    suspend fun planQuery(request: AiQueryPlanRequest): AiQueryPlanResponse? = null
     suspend fun answer(request: AiAnswerRequest): AiAnswerResponse
     suspend fun summarize(request: SummaryRequest): SummaryResponse
 }
