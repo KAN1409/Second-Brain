@@ -3,8 +3,10 @@ package com.kareem.secondbrain.app.di
 import android.content.Context
 import androidx.room3.Room
 import androidx.sqlite.driver.AndroidSQLiteDriver
+import com.kareem.secondbrain.ai.api.Embedder
 import com.kareem.secondbrain.ai.api.OcrEngine
 import com.kareem.secondbrain.ai.api.Transcriber
+import com.kareem.secondbrain.ai.embedding.EmbeddingGemmaEmbedder
 import com.kareem.secondbrain.ai.ocr.HybridOcrEngine
 import com.kareem.secondbrain.ai.ocr.MlKitOcrEngine
 import com.kareem.secondbrain.ai.ocr.TesseractArabicOcrEngine
@@ -94,8 +96,15 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideMemorySearchRepository(searchDao: SearchDao): MemorySearchRepository =
-        RoomMemorySearchRepository(searchDao)
+    fun provideEmbedder(@ApplicationContext context: Context): Embedder =
+        EmbeddingGemmaEmbedder(context)
+
+    @Provides
+    @Singleton
+    fun provideMemorySearchRepository(
+        searchDao: SearchDao,
+        embedder: Embedder,
+    ): MemorySearchRepository = RoomMemorySearchRepository(searchDao, embedder)
 
     @Provides
     @Singleton

@@ -45,9 +45,10 @@ class RoomMemorySearchRepository(
 
         val activeEmbedder = embedder
         val queryVector = activeEmbedder?.let { engine ->
-            runCatching { engine.embed(listOf(query)).singleOrNull() }.getOrNull()
+            runCatching { engine.embedQuery(query) }.getOrNull()
         }
         val embeddingByChunk = if (activeEmbedder != null && queryVector != null) {
+            ensureEmbeddings(chunks, activeEmbedder, SEARCH_EMBED_BATCH)
             dao.embeddingsForChunks(chunks.map(MemoryChunkEntity::id), activeEmbedder.signature)
                 .associateBy(MemoryEmbeddingEntity::chunk_id)
         } else {
@@ -115,16 +116,33 @@ class RoomMemorySearchRepository(
         }
         dao.replaceChunks(memory.id, chunks)
         if (chunks.isEmpty()) return
+        embedder?.let { ensureEmbeddings(chunks, it, chunks.size) }
+    }
 
-        val activeEmbedder = embedder ?: return
-        val vectors = runCatching { activeEmbedder.embed(chunks.map(MemoryChunkEntity::text)) }.getOrNull() ?: return
-        if (vectors.size != chunks.size || vectors.any { it.isEmpty() }) return
+    private suspend fun ensureEmbeddings(
+        chunks: List<MemoryChunkEntity>,
+        engine: Embedder,
+        maxBatch: Int,
+    ) {
+        if (chunks.isEmpty() || maxBatch <= 0) return
+        val existingIds = dao.embeddingsForChunks(chunks.map(MemoryChunkEntity::id), engine.signature)
+            .asSequence()
+            .map(MemoryEmbeddingEntity::chunk_id)
+            .toHashSet()
+        val missing = chunks.asSequence()
+            .filter { it.id !in existingIds }
+            .take(maxBatch)
+            .toList()
+        if (missing.isEmpty()) return
+
+        val vectors = runCatching { engine.embedDocuments(missing.map(MemoryChunkEntity::text)) }.getOrNull() ?: return
+        if (vectors.size != missing.size || vectors.any { it.isEmpty() }) return
         val now = clock.millis()
         dao.upsertEmbeddings(
-            chunks.zip(vectors).map { (chunk, vector) ->
+            missing.zip(vectors).map { (chunk, vector) ->
                 MemoryEmbeddingEntity(
                     chunk_id = chunk.id,
-                    model_signature = activeEmbedder.signature,
+                    model_signature = engine.signature,
                     dimensions = vector.size,
                     encoding = VectorCodec.ENCODING,
                     vector_blob = VectorCodec.encode(vector),
@@ -132,6 +150,10 @@ class RoomMemorySearchRepository(
                 )
             },
         )
-        dao.markEmbedded(chunks.map(MemoryChunkEntity::id), activeEmbedder.signature)
+        dao.markEmbedded(missing.map(MemoryChunkEntity::id), engine.signature)
+    }
+
+    private companion object {
+        const val SEARCH_EMBED_BATCH = 32
     }
 }

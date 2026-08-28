@@ -22,6 +22,8 @@ interface OcrEngine { suspend fun recognize(image: ImageInput): OcrResult }
 interface Embedder {
     val signature: String
     suspend fun embed(texts: List<String>): List<FloatArray>
+    suspend fun embedQuery(text: String): FloatArray = embed(listOf(text)).single()
+    suspend fun embedDocuments(texts: List<String>): List<FloatArray> = embed(texts)
 }
 interface AiProvider {
     suspend fun answer(request: AiAnswerRequest): AiAnswerResponse
