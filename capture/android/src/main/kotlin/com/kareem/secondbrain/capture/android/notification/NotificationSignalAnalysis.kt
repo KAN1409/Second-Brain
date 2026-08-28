@@ -176,11 +176,7 @@ object NotificationSignalAnalyzer {
                 notificationInstanceIdentity,
                 lifecycle.newMessageFingerprints.sorted().joinToString("|"),
             )
-            else -> stableId(
-                "signal-snapshot",
-                notificationInstanceIdentity,
-                lifecycle.visibleFingerprint,
-            )
+            else -> stableId("signal-notification", notificationInstanceIdentity)
         }
         return NotificationSignalAnalysis(
             sourceProfileIdentity = sourceProfileIdentity,
