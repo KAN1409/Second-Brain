@@ -82,6 +82,42 @@ class NotificationSignalAnalysisTest {
     }
 
     @Test
+    fun newMessageClassificationDoesNotReuseOtpFromOlderMessageInSnapshot() {
+        val dir = Files.createTempDirectory("relay-delta-entities").toFile()
+        try {
+            val store = DurableNotificationLifecycleStore(dir)
+            val oldOtp = NotificationAnalysisMessage("Kareem", "OTP code 482193", Instant.ofEpochMilli(1000))
+            val firstFacts = facts(body = oldOtp.text, messages = listOf(oldOtp))
+            val identity = NotificationSignalAnalyzer.notificationIdentity(firstFacts)
+            store.observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(firstFacts),
+                NotificationSignalAnalyzer.stableChurnFingerprint(firstFacts),
+                firstFacts.messages.map(NotificationSignalAnalyzer::messageFingerprint),
+                nowEpochMs = 1000,
+            )
+
+            val newMessage = NotificationAnalysisMessage("Kareem", "Thanks, received", Instant.ofEpochMilli(2000))
+            val updatedFacts = facts(body = newMessage.text, messages = listOf(oldOtp, newMessage))
+            val lifecycle = store.observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(updatedFacts),
+                NotificationSignalAnalyzer.stableChurnFingerprint(updatedFacts),
+                updatedFacts.messages.map(NotificationSignalAnalyzer::messageFingerprint),
+                nowEpochMs = 2000,
+            )
+            val analysis = NotificationSignalAnalyzer.analyze(updatedFacts, lifecycle)
+
+            assertEquals(NotificationMeaningfulChange.NEW_MESSAGES, analysis.change)
+            assertEquals(RelaySignalType.HUMAN_MESSAGE, analysis.signalType)
+            assertFalse(analysis.entities.any { it.type == "OTP" })
+            assertTrue(analysis.entities.any { it.type == "PERSON" && it.sourceField == "messages[0].sender" })
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun exactSnapshotUpdateIsRecognizedAsDuplicateAcrossStoreInstances() {
         val dir = Files.createTempDirectory("relay-lifecycle-restart").toFile()
         try {
