@@ -17,66 +17,74 @@ Status legend:
 - ✅ **Android capture works** — NotificationListener capture is running and stored events are visible in Relay diagnostics.
 - ✅ **Cortex Local Bus V1 connectivity works** — `CORTEX_INGEST_V1`, connector `second_brain`, endpoint connected.
 - ✅ **Per-event Cortex ACK correlation works** — Relay reports delivery only after Cortex ACKs the exact `event_id`; `Messenger.send()` alone is not treated as delivered.
-- ✅ **Retry-safe V1 event identity works within the current process** — retries reuse the same wire event id and Cortex can return duplicate acceptance.
+- ✅ **Retry-safe V1 event identity works** — retries reuse the same wire event id and Cortex can return duplicate acceptance.
 - ✅ **Recent Signals is human-readable and inspectable** — app/source, sender/title, preview, delivery state and tap-for-details exist.
-- ✅ **Diagnostic accounting is explicit** — captured events, send attempts, ACKed deliveries, retry/failure incidents, and per-signal delivery accounting are exported.
+- ✅ **Diagnostic accounting is explicit** — captured events, send attempts, ACKed deliveries, retry/failure incidents, lifecycle counters and per-signal delivery accounting are exported.
 - ✅ **Update-in-place / permanent signer path works** — package remains `com.kareem.secondbrain`; permanent signer is preserved; installation uses `pm install -r`.
 
-## IMPLEMENTATION BLOCKERS — 1–7 must be green before the combined device candidate
+## IMPLEMENTATION BLOCKERS — 1–7 are green; combined candidate is allowed
 
-- ❌ **1. Durable outbox across process death / reboot**
-  - Persist undelivered delivery copies locally.
-  - Re-open pending outbox entries after Relay process restart and device reboot.
-  - Remove an entry only after correlated Cortex ACK or explicit terminal rejection.
-  - Preserve the same logical/wire event id across retries.
+Implementation head `32e7ac201888d96a3ac7c91f45a3e87d8cc9d582` passed Android CI run 245: unit tests, debug assemble, unsigned release assemble and artifact uploads all succeeded. Candidate/version-only commits must pass CI again before device installation.
 
-- ❌ **2. Notification lifecycle tracking**
-  - Track `POSTED → UPDATED → REMOVED` for the same Android notification identity.
-  - Do not treat every notification update as an unrelated event.
-  - Keep genuine new messages inside an updated MessagingStyle notification distinguishable as new evidence.
+- ✅ **1. Durable outbox across process death / reboot**
+  - Undelivered delivery copies are persisted in a disk-backed outbox before send.
+  - Pending entries are restored on process startup, boot/package-replace hooks and NotificationListener startup.
+  - Entries are retired only after correlated Cortex ACK or explicit terminal rejection.
+  - Retry/recovery preserves the same stored event id and `sb_<eventId>` wire id.
+  - Diagnostics expose exact `restored_pending_event_ids` for device acceptance.
 
-- ❌ **3. Meaningful delta detection**
-  - Compare updates for the same notification identity.
-  - Forward meaningful changes only.
-  - Suppress machine churn such as percentage/progress-only changes when deterministic.
-  - Never suppress uncertain evidence merely because it looks low-value.
+- ✅ **2. Notification lifecycle tracking**
+  - Durable per-notification state tracks `POSTED → UPDATED → REMOVED` using stable Android/source identity.
+  - Updates retain generation and sequence instead of becoming unrelated snapshots by default.
+  - A removal closes the current notification instance; a later repost starts a new generation.
 
-- ❌ **4. Multi-account / conversation identity**
-  - Resolve Android user/profile, notification key, shortcut/conversation metadata, Person metadata and available account hints into a stable source/conversation identity when Android exposes enough evidence.
-  - Do not assume package name alone identifies an account.
-  - Unit-test profile/account-scope separation before the candidate; validate the user's two-WhatsApp-account scenario in blocker 8.
+- ✅ **3. Meaningful delta detection**
+  - Exact repeated snapshots are suppressed as duplicates.
+  - MessagingStyle updates identify genuinely new structured messages and send only their evidence delta.
+  - Deterministic percentage/progress-only machine churn is retained locally for forensics but suppressed from Cortex delivery.
+  - Uncertain content changes remain preserved rather than being discarded as low-value.
 
-- ❌ **5. Rich evidence normalization + provenance**
-  - Preserve full MessagingStyle message structure.
-  - Normalize sender, conversation, timestamps, replyability and Android metadata.
-  - Deterministically extract visible URLs, phone numbers, OTPs, explicit dates/times, money values, order/reference/tracking numbers and shown names.
-  - Every extracted entity must retain source span/provenance; Relay must not invent entities.
+- ✅ **4. Multi-account / conversation identity foundation**
+  - Source identity includes package + Android user/profile + UID rather than package name alone.
+  - Notification/conversation identity uses notification key, shortcut/conversation metadata and Person/participant evidence when available.
+  - Tests verify distinct Android profile/UID scope does not collapse into one source identity.
+  - The user's two-WhatsApp-account real-device scenario remains part of blocker 8 because Relay must not invent an account discriminator Android did not expose.
 
-- ❌ **6. Stable logical signal identity**
-  - Define one logical signal identity that survives retries and lifecycle updates without confusing a true new message with an update.
-  - Keep current V1 wire compatibility; do not introduce breaking `CORTEX_SIGNAL_V2` unilaterally.
+- ✅ **5. Rich evidence normalization + provenance**
+  - Full MessagingStyle structures, sender/conversation/timestamps, replyability, Person and Android metadata are captured.
+  - Deterministic extraction covers visible URLs, phone numbers, OTPs, explicit dates/times, money values, references/tracking/order-like identifiers and shown person names.
+  - Every entity carries source field + exact span + confidence.
+  - New-message delta classification/entities use only the new evidence, preventing stale older messages from contaminating the new signal.
+  - Compact oversized payload handling preserves Relay normalization/provenance metadata instead of dropping it.
 
-- ❌ **7. Conservative signal/noise classification foundation**
-  - Classify signal type, not personal importance: human_message, email, call, sms, otp, banking, delivery, calendar, security, download, system_noise, other.
-  - Use `FORWARD / LOW_VALUE / DROP_CONFIRMED_NOISE` conservatively.
-  - Personal priority/relevance remains Cortex's job.
-  - App-specific nuisance rules are not milestones by themselves.
+- ✅ **6. Stable logical signal identity**
+  - One notification instance keeps one logical signal identity across ordinary lifecycle/content updates; `update_sequence` distinguishes revisions.
+  - A genuine new MessagingStyle message delta gets a distinct logical signal identity.
+  - Retry/replay remains anchored to the same captured `event_id` / V1 wire id.
+  - No breaking `CORTEX_SIGNAL_V2` change was introduced; new identity/lifecycle evidence is carried inside compatible metadata.
+
+- ✅ **7. Conservative signal/noise classification foundation**
+  - Signal type classification covers human_message, email, call, sms, otp, banking, delivery, calendar, security, download, system_noise and other.
+  - `FORWARD / LOW_VALUE / DROP_CONFIRMED_NOISE` remains conservative.
+  - Confirmed transport/media control surfaces and deterministic machine churn can be suppressed while uncertain evidence is preserved.
+  - Personal priority/relevance remains Cortex's responsibility.
 
 ## DEVICE ACCEPTANCE GATE — run once on the combined candidate
 
 - ❌ **8. One combined real-device acceptance test**
   - Cortex available: real WhatsApp message → captured → delivered → exact ACK / Cortex signal id.
   - Cortex unavailable: real message → captured → persists in durable outbox.
-  - Kill/restart Relay (and reboot if practical) while Cortex unavailable → pending signal remains.
+  - Kill/restart Relay (and reboot if practical) while Cortex unavailable → pending signal remains and the same restored event id is reported.
   - Restore Cortex → same pending signal delivers once logically and receives correlated ACK.
   - Updated notification does not create unrelated duplicate evidence.
   - New MessagingStyle message inside an updated notification is preserved as new evidence.
   - Two WhatsApp accounts remain distinguishable where Android evidence permits; if Android exposes no account discriminator, Relay must report that evidence is insufficient rather than invent an account identity.
+  - Confirmed media/progress machine noise remains local and does not consume Cortex delivery.
   - Diagnostic report shows zero unexplained backlog/rejections and explains any retries per signal.
 
 ## Explicitly not required before v1.0
 
-These are valuable later but must not distract from the blockers above:
+These are valuable later but must not distract from the acceptance gate:
 
 - Cortex → Relay capture-policy feedback loop.
 - Full breaking `CORTEX_SIGNAL_V2` rollout.
