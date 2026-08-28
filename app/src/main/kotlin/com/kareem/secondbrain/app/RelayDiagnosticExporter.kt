@@ -35,7 +35,6 @@ internal object RelayDiagnosticExporter {
         put("connector_id", "second_brain")
         put("connection_state", s.connectionState.name)
         put("captured", s.captured)
-        // Keep legacy keys for compatibility, while making the semantics explicit for humans/tools.
         put("sent", s.sent)
         put("send_attempts", s.sent)
         put("delivered_cortex_ack", s.forwarded)
@@ -45,11 +44,19 @@ internal object RelayDiagnosticExporter {
         put("waiting_or_in_flight", s.waiting)
         put("failed_or_retry_events", s.failedRetries)
         put("delivery_issue_incidents", s.failedRetries)
+        put("lifecycle", JSONObject().apply {
+            put("posted", s.lifecyclePosted)
+            put("updated", s.lifecycleUpdated)
+            put("removed", s.lifecycleRemoved)
+            put("exact_duplicate_updates_suppressed", s.duplicateUpdatesSuppressed)
+            put("machine_churn_updates_suppressed", s.machineChurnSuppressed)
+        })
         put("counter_semantics", JSONObject().apply {
-            put("captured", "Locally stored notification events. Incremented once per stored event.")
+            put("captured", "Locally stored meaningful notification evidence events. Incremented once per stored event.")
             put("send_attempts", "Actual Messenger.send() ingest attempts. Retries can make this greater than captured.")
             put("delivered_cortex_ack", "Events accepted only after a correlated Cortex ACK for the same event_id.")
             put("delivery_issue_incidents", "Retry/failure incidents, not unique events; one event can increment this more than once.")
+            put("lifecycle_updated", "Android updates observed for an existing notification identity, including updates later suppressed as exact duplicates/churn.")
         })
         put("last_package", s.lastPackage ?: JSONObject.NULL)
         put("last_filter_state", s.lastFilterState?.name ?: JSONObject.NULL)
@@ -64,12 +71,17 @@ internal object RelayDiagnosticExporter {
                 put(JSONObject().apply {
                     put("event_id", signal.eventId)
                     put("wire_event_id", "sb_${signal.eventId}")
+                    put("logical_signal_id", signal.logicalSignalId ?: JSONObject.NULL)
+                    put("notification_identity", signal.notificationIdentity ?: JSONObject.NULL)
+                    put("lifecycle_state", signal.lifecycleState ?: JSONObject.NULL)
+                    put("update_sequence", signal.updateSequence ?: JSONObject.NULL)
+                    put("signal_type", signal.signalType ?: JSONObject.NULL)
                     put("occurred_at", signal.occurredAt.toString())
                     put("captured_at", signal.capturedAt.toString())
                     put("updated_at", signal.updatedAt.toString())
                     put("source_package", signal.packageName)
-                    // Diagnostic export intentionally omits notification title/body preview. Cortex
-                    // can correlate delivery using wire_event_id without duplicating message content.
+                    // Diagnostic export intentionally omits title/body/message content. The IDs and
+                    // provenance metadata are sufficient to validate lifecycle and delivery behavior.
                     put("filter_state", signal.filterState?.name ?: JSONObject.NULL)
                     put("filter_reason", signal.filterReason ?: JSONObject.NULL)
                     put("delivery_state", signal.deliveryState.name)
