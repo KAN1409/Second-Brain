@@ -56,7 +56,14 @@ class VoiceRecoveryWorker @AssistedInject constructor(
                     continue
                 }
 
-                when (val result = captureRepository.ingest(CaptureCommand.Voice(occurredAt, asset.id))) {
+                when (
+                    val result = captureRepository.ingest(
+                        CaptureCommand.Voice(
+                            occurredAt = occurredAt,
+                            assetId = asset.id,
+                        ),
+                    )
+                ) {
                     is CaptureResult.Stored -> {
                         enrichmentScheduler.enqueueTranscription(result.eventId, asset.id)
                         file.delete()
