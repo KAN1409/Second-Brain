@@ -13,6 +13,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,6 +39,7 @@ fun SettingsScreen(
     embeddingModelSizeBytes: Long,
     embeddingModelMessage: String?,
     geminiKeyConfigured: Boolean,
+    cloudAiEnabled: Boolean,
     geminiKeyMessage: String?,
     onToggleCapture: () -> Unit,
     onNotificationAccess: () -> Unit,
@@ -48,6 +50,7 @@ fun SettingsScreen(
     onInstallEmbeddingModel: () -> Unit,
     onSaveGeminiApiKey: (String) -> Unit,
     onClearGeminiApiKey: () -> Unit,
+    onCloudAiEnabledChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var apiKey by remember { mutableStateOf("") }
@@ -98,9 +101,27 @@ fun SettingsScreen(
         HorizontalDivider()
         Text("Ask My Brain • Gemini BYOK", style = MaterialTheme.typography.titleMedium)
         Text(
-            if (geminiKeyConfigured) "Gemini key configured. Cloud synthesis can use only memories whose app policy explicitly allows AI upload."
-            else "No Gemini key configured. Ask remains evidence-only and does not upload app memories.",
+            if (geminiKeyConfigured) "Gemini key configured. Cloud synthesis still stays off until you enable it below."
+            else "No Gemini key configured. Ask remains evidence-only and does not upload memories.",
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Enable cloud synthesis")
+                Text(
+                    "Global opt-in. App memories also need Allow cloud AI enabled in App policies.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = cloudAiEnabled,
+                onCheckedChange = onCloudAiEnabledChanged,
+                enabled = geminiKeyConfigured,
+            )
+        }
         Text(
             "Personal/sideload BYOK only. A key stored on a phone is encrypted at rest with Android Keystore, but a determined attacker with runtime access may still extract it. Production deployments should proxy Gemini through a backend.",
             style = MaterialTheme.typography.bodySmall,
