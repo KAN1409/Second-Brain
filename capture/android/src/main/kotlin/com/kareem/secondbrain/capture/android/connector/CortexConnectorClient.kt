@@ -14,20 +14,22 @@ import android.util.Log
 import com.kareem.secondbrain.domain.CaptureCommand
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Optional one-way live tunnel into Cortex.
+ * Optional live tunnel into Cortex with a disk-backed delivery outbox.
  *
  * Relay remains authoritative for capture. Events are offered to Cortex only after local storage
  * succeeds, and connector failure can never roll back or block that local capture.
  *
  * Wire compatibility is intentionally frozen at Local Bus V1 / CORTEX_INGEST_V1. V1 already
- * returns event_id/status/signal_id for ingest replies, so delivery is now dequeued only after a
- * correlated Cortex ACK rather than after Messenger.send().
+ * returns event_id/status/signal_id for ingest replies, so a durable delivery copy is removed only
+ * after a correlated Cortex ACK or explicit terminal rejection. Process death can therefore replay
+ * the same event_id safely instead of losing the evidence.
  */
 object CortexConnectorClient {
     private const val TAG = "CortexConnector"
@@ -42,10 +44,11 @@ object CortexConnectorClient {
     private const val MSG_ACK = 100
     private const val MSG_ERROR = 101
 
-    private const val MAX_PENDING = 128
+    private const val MAX_MEMORY_PENDING = 128
     private const val MAX_PAYLOAD_BYTES = 128 * 1024
     private const val MAX_RETRY_DELAY_MS = 30_000L
     private const val ACK_TIMEOUT_MS = 8_000L
+    private const val OUTBOX_DIRECTORY = "cortex-relay-outbox-v1"
 
     private const val KEY_CONNECTOR_ID = "connector_id"
     private const val KEY_CAPABILITIES_JSON = "capabilities_json"
@@ -74,6 +77,8 @@ object CortexConnectorClient {
     @Volatile private var appContext: Context? = null
     @Volatile private var endpointReady: Boolean = false
     @Volatile private var inFlight: PendingEvent? = null
+    @Volatile private var outboxLoaded: Boolean = false
+    private var outbox: DurableRelayOutbox? = null
 
     private lateinit var connection: ServiceConnection
 
@@ -151,38 +156,63 @@ object CortexConnectorClient {
         }
     }
 
-    fun enqueueNotification(context: Context, command: CaptureCommand.Notification, storedEventId: String) {
-        val raw = buildNotificationEvent(command, storedEventId).toString()
-        var dropped: PendingEvent? = null
+    /** Restore durable pending work whenever the Relay process starts. */
+    fun start(context: Context) {
+        val applicationContext = context.applicationContext
+        appContext = applicationContext
+        var corruptFiles = 0
         val waiting = synchronized(queueLock) {
-            while (queue.size >= MAX_PENDING) {
-                val head = queue.peekFirst()
-                if (head != null && head === inFlight) break
-                dropped = queue.removeFirst()
-                Log.w(TAG, "Tunnel queue full; dropped oldest delivery copy (local capture retained)")
+            val store = outbox ?: DurableRelayOutbox(File(applicationContext.noBackupFilesDir, OUTBOX_DIRECTORY)).also {
+                outbox = it
             }
-            if (queue.size >= MAX_PENDING) {
-                dropped = PendingEvent(storedEventId, raw)
-            } else {
-                queue.addLast(PendingEvent(eventId = storedEventId, raw = raw))
+            if (!outboxLoaded) {
+                val loaded = store.loadAll()
+                corruptFiles = loaded.corruptFiles
+                queue.clear()
+                loaded.entries.take(MAX_MEMORY_PENDING).forEach { entry ->
+                    queue.addLast(PendingEvent(entry.eventId, entry.raw))
+                }
+                outboxLoaded = true
             }
-            queue.size
+            durableWaitingCountLocked()
         }
-        if (dropped?.eventId == storedEventId) {
+        RelayRuntimeDiagnostics.markWaiting(waiting)
+        if (corruptFiles > 0) {
+            RelayRuntimeDiagnostics.markFailure(
+                "Durable outbox contains $corruptFiles unreadable entr${if (corruptFiles == 1) "y" else "ies"}; preserved for diagnostics",
+            )
+        }
+        if (waiting > 0) {
+            ensureBound(applicationContext)
+            drain()
+        }
+    }
+
+    fun enqueueNotification(context: Context, command: CaptureCommand.Notification, storedEventId: String) {
+        start(context)
+        val raw = buildNotificationEvent(command, storedEventId).toString()
+        val store = synchronized(queueLock) { outbox }
+        if (store == null) {
             RelayRuntimeDiagnostics.markDroppedDeliveryCopy(
                 eventId = storedEventId,
-                reason = "V1 queue full while an event was awaiting ACK; local capture retained",
+                reason = "Durable outbox unavailable; local capture retained",
             )
             return
         }
-        RelayRuntimeDiagnostics.markQueued(storedEventId, waiting)
-        dropped?.let { event ->
+
+        try {
+            store.put(storedEventId, raw)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Durable outbox write failed", t)
             RelayRuntimeDiagnostics.markDroppedDeliveryCopy(
-                eventId = event.eventId,
-                reason = "V1 queue overflow; delivery copy dropped, local capture retained",
+                eventId = storedEventId,
+                reason = "Durable outbox write failed: ${t.javaClass.simpleName}; local capture retained",
             )
+            return
         }
-        appContext = context.applicationContext
+
+        val waiting = synchronized(queueLock) { refillMemoryQueueLocked() }
+        RelayRuntimeDiagnostics.markQueued(storedEventId, waiting)
         ensureBound(context.applicationContext)
         drain()
     }
@@ -226,7 +256,7 @@ object CortexConnectorClient {
         }
     }
 
-    /** Serializes all sends and leaves the queue head in place until Cortex ACKs that exact event. */
+    /** Serializes sends and leaves the durable queue head in place until Cortex ACKs it. */
     private fun drain() {
         if (!draining.compareAndSet(false, true)) return
         try {
@@ -240,14 +270,17 @@ object CortexConnectorClient {
                 return
             }
             if (inFlight != null) return
-            val pending = synchronized(queueLock) { queue.peekFirst() } ?: return
+            val pending = synchronized(queueLock) {
+                if (queue.isEmpty()) refillMemoryQueueLocked()
+                queue.peekFirst()
+            } ?: return
             inFlight = pending
             try {
                 val message = Message.obtain(null, MSG_INGEST)
                 message.replyTo = replies
                 message.data = Bundle().apply { putString(KEY_EVENT_JSON, pending.raw) }
                 target.send(message)
-                RelayRuntimeDiagnostics.markSentAwaitingAck(pending.eventId, synchronized(queueLock) { queue.size })
+                RelayRuntimeDiagnostics.markSentAwaitingAck(pending.eventId, durableWaitingCount())
                 scheduleAckTimeout(pending)
             } catch (t: Throwable) {
                 inFlight = null
@@ -268,13 +301,10 @@ object CortexConnectorClient {
             return
         }
         cancelAckTimeout()
-        val waiting = synchronized(queueLock) {
-            val head = queue.peekFirst()
-            if (head != null && head.wireEventId == wireEventId) queue.removeFirst()
-            queue.size
-        }
+        if (!removeDurableHead(pending, "ACK")) return
         inFlight = null
         retryAttempt.set(0)
+        val waiting = synchronized(queueLock) { refillMemoryQueueLocked() }
         RelayRuntimeDiagnostics.markForwarded(pending.eventId, waiting, status, signalId)
         drain()
     }
@@ -288,11 +318,8 @@ object CortexConnectorClient {
         cancelAckTimeout()
         inFlight = null
         if (terminalRejection(status)) {
-            val waiting = synchronized(queueLock) {
-                val head = queue.peekFirst()
-                if (head != null && head.wireEventId == wireEventId) queue.removeFirst()
-                queue.size
-            }
+            if (!removeDurableHead(pending, "terminal rejection")) return
+            val waiting = synchronized(queueLock) { refillMemoryQueueLocked() }
             RelayRuntimeDiagnostics.markRejected(pending.eventId, waiting, status, detail)
             drain()
         } else {
@@ -301,6 +328,25 @@ object CortexConnectorClient {
                 "Cortex $status${if (detail.isNotBlank()) ": $detail" else ""}; retry scheduled",
             )
             resetBindingAndRetry()
+        }
+    }
+
+    private fun removeDurableHead(pending: PendingEvent, reason: String): Boolean {
+        val store = synchronized(queueLock) { outbox }
+        try {
+            store?.remove(pending.eventId)
+            synchronized(queueLock) {
+                val head = queue.peekFirst()
+                if (head != null && head.eventId == pending.eventId) queue.removeFirst()
+            }
+            return true
+        } catch (t: Throwable) {
+            inFlight = null
+            val message = "Could not retire durable outbox entry after $reason: ${t.javaClass.simpleName}; same event retained"
+            Log.e(TAG, message, t)
+            RelayRuntimeDiagnostics.markRetry(pending.eventId, message)
+            resetBindingAndRetry()
+            return false
         }
     }
 
@@ -317,7 +363,7 @@ object CortexConnectorClient {
         mainHandler.postDelayed({
             if (inFlight !== pending) return@postDelayed
             inFlight = null
-            RelayRuntimeDiagnostics.markRetry(pending.eventId, "Cortex ACK timeout; same event retained for retry")
+            RelayRuntimeDiagnostics.markRetry(pending.eventId, "Cortex ACK timeout; same durable event retained for retry")
             resetBindingAndRetry()
         }, ackTimeoutToken, ACK_TIMEOUT_MS)
     }
@@ -345,7 +391,31 @@ object CortexConnectorClient {
         mainHandler.postDelayed(retryRunnable, delay)
     }
 
-    private fun hasPending(): Boolean = synchronized(queueLock) { queue.isNotEmpty() }
+    private fun hasPending(): Boolean = durableWaitingCount() > 0
+
+    /**
+     * Fill only a bounded RAM window. Anything beyond the window remains safely on disk and is
+     * pulled in as earlier events are ACKed.
+     *
+     * Must be called while holding queueLock. Returns total durable pending count, not RAM count.
+     */
+    private fun refillMemoryQueueLocked(): Int {
+        val store = outbox ?: return queue.size
+        val loaded = store.loadAll()
+        val known = queue.asSequence().map { it.eventId }.toMutableSet()
+        loaded.entries.asSequence()
+            .filterNot { it.eventId in known }
+            .take((MAX_MEMORY_PENDING - queue.size).coerceAtLeast(0))
+            .forEach { entry ->
+                queue.addLast(PendingEvent(entry.eventId, entry.raw))
+                known += entry.eventId
+            }
+        return loaded.entries.size
+    }
+
+    private fun durableWaitingCount(): Int = synchronized(queueLock) { durableWaitingCountLocked() }
+
+    private fun durableWaitingCountLocked(): Int = outbox?.loadAll()?.entries?.size ?: queue.size
 
     private fun buildNotificationEvent(command: CaptureCommand.Notification, storedEventId: String): JSONObject {
         val metadata = parseMetadata(command.metadataJson)
