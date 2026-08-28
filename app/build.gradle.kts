@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.secondbrain"
         minSdk = 30
         targetSdk = 37
-        versionCode = 8
-        versionName = "0.8.0-relay-details-ack-dev"
+        versionCode = 9
+        versionName = "0.9.0-relay-media-noise-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
