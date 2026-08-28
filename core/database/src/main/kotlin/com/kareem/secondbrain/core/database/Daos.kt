@@ -38,6 +38,15 @@ interface CaptureEventDao {
 
     @Query("SELECT COUNT(*) FROM capture_event WHERE source_type = :sourceType AND content_hash = :hash")
     suspend fun countBySourceAndContentHash(sourceType: String, hash: String): Int
+
+    @Query("""
+        SELECT * FROM capture_event
+        WHERE source_type = :sourceType
+          AND asset_id = :assetId
+        ORDER BY occurred_at DESC
+        LIMIT 1
+    """)
+    suspend fun latestBySourceAndAssetId(sourceType: String, assetId: String): CaptureEventEntity?
 }
 
 /** Event + normalized Memory are committed together. */
@@ -199,6 +208,7 @@ interface MemoryDao {
     @Query("DELETE FROM memory WHERE id = :id")
     suspend fun delete(id: String)
 }
+
 
 @Dao
 interface AssetDao {

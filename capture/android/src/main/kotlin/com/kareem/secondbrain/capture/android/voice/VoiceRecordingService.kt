@@ -13,6 +13,7 @@ import android.media.MediaRecorder
 import android.os.IBinder
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CaptureRepository
@@ -24,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.RandomAccessFile
@@ -39,6 +41,7 @@ class VoiceRecordingService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var recording = false
+    @Volatile private var starting = false
     private var recorder: AudioRecord? = null
     private var recordingJob: Job? = null
     private var outputFile: File? = null
@@ -49,55 +52,75 @@ class VoiceRecordingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> scope.launch { stopAndPersist() }
-            ACTION_START, null -> startRecording()
+            ACTION_START, null -> requestStartRecording()
         }
         return START_NOT_STICKY
     }
 
-    private fun startRecording() {
-        if (recording) return
+    private fun requestStartRecording() {
+        if (recording || starting) return
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             stopSelf()
             return
         }
+        starting = true
         createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification("Preparing voice memory…"))
+        scope.launch {
+            val running = captureRepository.observeCaptureState().first().mode == CaptureMode.RUNNING
+            if (!running) {
+                starting = false
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return@launch
+            }
+            startRecordingAfterGate()
+        }
+    }
 
-        val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
+    private fun startRecordingAfterGate() {
+        if (recording) {
+            starting = false
+            return
+        }
+        val minBuffer = AudioRecord.getMinBufferSize(PendingVoiceFile.SAMPLE_RATE, CHANNEL, ENCODING)
         if (minBuffer <= 0) {
+            starting = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
         val audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
+            PendingVoiceFile.SAMPLE_RATE,
             CHANNEL,
             ENCODING,
-            max(minBuffer, SAMPLE_RATE),
+            max(minBuffer, PendingVoiceFile.SAMPLE_RATE),
         )
         if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
             audioRecord.release()
+            starting = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
-        val file = File.createTempFile("voice-", ".wav", cacheDir)
-        RandomAccessFile(file, "rw").use { raf ->
-            raf.setLength(0)
-            raf.write(ByteArray(WAV_HEADER_BYTES))
-        }
+        val start = Instant.now()
+        val file = PendingVoiceFile.create(this, start)
         outputFile = file
-        startedAt = Instant.now()
+        startedAt = start
         recorder = audioRecord
         recording = true
+        starting = false
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification("Tap Stop when finished"))
         audioRecord.startRecording()
-        recordingJob = scope.launch { writePcm(audioRecord, file, max(minBuffer, SAMPLE_RATE)) }
+        recordingJob = scope.launch { writePcm(audioRecord, file, max(minBuffer, PendingVoiceFile.SAMPLE_RATE)) }
     }
 
     private fun writePcm(audioRecord: AudioRecord, file: File, bufferSize: Int) {
         val buffer = ByteArray(bufferSize)
         RandomAccessFile(file, "rw").use { raf ->
-            raf.seek(WAV_HEADER_BYTES.toLong())
+            raf.seek(PendingVoiceFile.WAV_HEADER_BYTES.toLong())
             while (recording) {
                 val read = audioRecord.read(buffer, 0, buffer.size)
                 if (read > 0) raf.write(buffer, 0, read)
@@ -107,6 +130,8 @@ class VoiceRecordingService : Service() {
 
     private suspend fun stopAndPersist() {
         if (!recording) {
+            starting = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
@@ -117,67 +142,36 @@ class VoiceRecordingService : Service() {
         recorder = null
 
         val file = outputFile
-        val occurredAt = startedAt ?: Instant.now()
+        val occurredAt = startedAt ?: file?.let(PendingVoiceFile::occurredAt) ?: Instant.now()
         outputFile = null
         startedAt = null
-        if (file == null || !file.isFile || file.length() <= WAV_HEADER_BYTES) {
+        if (file == null || !PendingVoiceFile.hasAudio(file)) {
             file?.delete()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
-        patchWavHeader(file)
-        val pcmBytes = file.length() - WAV_HEADER_BYTES
-        val durationMs = (pcmBytes * 1000L) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+        PendingVoiceFile.patchHeader(file)
         try {
             val asset = assets.importFile(
                 absolutePath = file.absolutePath,
                 mimeType = "audio/wav",
-                suggestedName = "voice-${occurredAt.toEpochMilli()}.wav",
-                durationMs = durationMs,
-                moveSource = true,
+                suggestedName = file.name,
+                durationMs = PendingVoiceFile.durationMs(file),
+                moveSource = false,
             )
-            val result = captureRepository.ingest(CaptureCommand.Voice(occurredAt = occurredAt, assetId = asset.id))
-            if (result is CaptureResult.Stored) {
-                enrichmentScheduler.enqueueTranscription(result.eventId, asset.id)
+            when (val result = captureRepository.ingest(CaptureCommand.Voice(occurredAt = occurredAt, assetId = asset.id))) {
+                is CaptureResult.Stored -> {
+                    enrichmentScheduler.enqueueTranscription(result.eventId, asset.id)
+                    file.delete()
+                }
+                else -> Unit // Keep durable pending file for recovery on the next app start.
             }
         } finally {
-            file.delete()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
-    }
-
-    private fun patchWavHeader(file: File) {
-        val dataSize = file.length() - WAV_HEADER_BYTES
-        RandomAccessFile(file, "rw").use { raf ->
-            raf.seek(0)
-            raf.writeBytes("RIFF")
-            writeLeInt(raf, (36L + dataSize).toInt())
-            raf.writeBytes("WAVE")
-            raf.writeBytes("fmt ")
-            writeLeInt(raf, 16)
-            writeLeShort(raf, 1)
-            writeLeShort(raf, 1)
-            writeLeInt(raf, SAMPLE_RATE)
-            writeLeInt(raf, SAMPLE_RATE * BYTES_PER_SAMPLE)
-            writeLeShort(raf, BYTES_PER_SAMPLE)
-            writeLeShort(raf, 16)
-            raf.writeBytes("data")
-            writeLeInt(raf, dataSize.toInt())
-        }
-    }
-
-    private fun writeLeInt(raf: RandomAccessFile, value: Int) {
-        raf.write(value and 0xff)
-        raf.write((value ushr 8) and 0xff)
-        raf.write((value ushr 16) and 0xff)
-        raf.write((value ushr 24) and 0xff)
-    }
-
-    private fun writeLeShort(raf: RandomAccessFile, value: Int) {
-        raf.write(value and 0xff)
-        raf.write((value ushr 8) and 0xff)
     }
 
     private fun createChannel() {
@@ -187,7 +181,7 @@ class VoiceRecordingService : Service() {
         )
     }
 
-    private fun buildNotification(): android.app.Notification {
+    private fun buildNotification(text: String): android.app.Notification {
         val stopIntent = Intent(this, VoiceRecordingService::class.java).setAction(ACTION_STOP)
         val stopPending = PendingIntent.getService(
             this,
@@ -198,7 +192,7 @@ class VoiceRecordingService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Recording voice memory")
-            .setContentText("Tap Stop when finished")
+            .setContentText(text)
             .setOngoing(true)
             .addAction(0, "Stop", stopPending)
             .build()
@@ -206,9 +200,11 @@ class VoiceRecordingService : Service() {
 
     override fun onDestroy() {
         recording = false
+        starting = false
         runCatching { recorder?.stop() }
         recorder?.release()
-        outputFile?.delete()
+        // Never mutate or delete the pending file here. The write job may still be unwinding after
+        // AudioRecord.stop(); VoiceRecoveryWorker owns header repair and cleanup on a later app start.
         scope.cancel()
         super.onDestroy()
     }
@@ -218,10 +214,7 @@ class VoiceRecordingService : Service() {
         const val ACTION_STOP = "com.kareem.secondbrain.action.STOP_VOICE_MEMORY"
         private const val CHANNEL_ID = "voice_memory_recording"
         private const val NOTIFICATION_ID = 4102
-        private const val SAMPLE_RATE = 16_000
         private const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val BYTES_PER_SAMPLE = 2
-        private const val WAV_HEADER_BYTES = 44
     }
 }

@@ -195,8 +195,10 @@ class RoomCaptureRepository(
             is CaptureCommand.File -> command.assetId
             else -> null
         }
-        if (command is CaptureCommand.Image && events.countBySourceAndContentHash(SourceType.IMAGE.name, hash) > 0) {
-            return CaptureResult.Ignored(IgnoreReason.EXACT_DUPLICATE)
+        if (command is CaptureCommand.Image || command is CaptureCommand.Voice) {
+            if (assetId != null && events.latestBySourceAndAssetId(source.name, assetId) != null) {
+                return CaptureResult.Ignored(IgnoreReason.EXACT_DUPLICATE)
+            }
         }
         return insert(
             source = source,
