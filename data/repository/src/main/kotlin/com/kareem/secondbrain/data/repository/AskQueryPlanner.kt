@@ -1,64 +1,119 @@
 package com.kareem.secondbrain.data.repository
 
+import com.kareem.secondbrain.ai.api.AiProvider
+import com.kareem.secondbrain.ai.api.AiQueryPlanRequest
 import com.kareem.secondbrain.core.model.MemoryKind
-import com.kareem.secondbrain.core.model.SearchRequest
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZonedDateTime
 
 /**
- * Deterministic, local query planning for Ask.
+ * Open-world query planning for Ask.
  *
- * Ask questions frequently contain metadata constraints ("at 3pm", "yesterday", "what did X send")
- * that are not part of the captured memory body. Convert those constraints into SearchRequest filters
- * before lexical/semantic ranking so generic app text cannot outrank the intended memory.
+ * Only metadata constraints explicitly present in the question become hard filters.
+ * Everything else remains a semantic clue. A model may add query variants and soft kind hints,
+ * but those hints never exclude memory types or manufacture facts.
  */
+internal data class AskSearchPlan(
+    val queries: List<String>,
+    val from: Instant? = null,
+    val to: Instant? = null,
+    val softKindHints: Set<MemoryKind> = emptySet(),
+    val relationHints: Set<String> = emptySet(),
+    val usedModelPlanner: Boolean = false,
+)
+
 internal object AskQueryPlanner {
     private val twelveHourTime = Regex("(?i)\\b(1[0-2]|0?[1-9])(?::([0-5]\\d))?\\s*(am|pm)\\b")
     private val twentyFourHourTime = Regex("\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b")
     private val yesterdayWords = Regex("(?i)\\b(yesterday)\\b|(?:أمبارح|امبارح)")
     private val todayWords = Regex("(?i)\\b(today)\\b|(?:النهاردة|اليوم)")
-    private val notificationIntent = Regex(
-        "(?i)\\b(send|sent|message|messages|text|texted|reply|replied|wrote|write|said|whatsapp|notification|notifications)\\b|(?:بعت|بعتلي|بعتله|رسالة|رسايل|واتساب|قال|رد)",
-    )
 
-    private val stopWords = setOf(
+    // Remove only question scaffolding and temporal syntax. Action words remain semantic clues.
+    private val scaffoldingWords = setOf(
         "what", "did", "does", "do", "when", "where", "who", "which", "was", "were", "is", "are",
         "at", "around", "about", "a", "an", "the", "to", "me", "my", "i", "he", "she", "they",
-        "send", "sent", "message", "messages", "text", "texted", "reply", "replied", "wrote", "write",
-        "said", "whatsapp", "notification", "notifications", "today", "yesterday",
+        "today", "yesterday",
         "ايه", "إيه", "امتى", "إمتى", "فين", "مين", "اللي", "في", "على", "الساعة", "حوالي",
-        "بعت", "بعتلي", "بعتله", "رسالة", "رسايل", "واتساب", "قال", "رد", "النهاردة", "اليوم", "أمبارح", "امبارح",
+        "النهاردة", "اليوم", "أمبارح", "امبارح",
     )
 
-    fun plan(question: String, clock: Clock): SearchRequest {
+    suspend fun plan(
+        question: String,
+        clock: Clock,
+        aiProvider: AiProvider? = null,
+        allowModelPlanning: Boolean = false,
+    ): AskSearchPlan {
         val trimmed = question.trim()
-        val now = ZonedDateTime.now(clock)
-        val timeMatch = parseTime(trimmed)
-        val date = when {
-            yesterdayWords.containsMatchIn(trimmed) -> now.toLocalDate().minusDays(1)
-            todayWords.containsMatchIn(trimmed) -> now.toLocalDate()
-            timeMatch != null -> nearestPastDate(now, timeMatch.time)
-            else -> null
-        }
+        val temporal = explicitTemporalWindow(trimmed, clock)
+        val anchorQuery = meaningfulQuery(trimmed)
 
-        val target = if (date != null && timeMatch != null) {
-            ZonedDateTime.of(date, timeMatch.time, now.zone)
+        val modelPlan = if (allowModelPlanning && aiProvider != null) {
+            runCatching {
+                aiProvider.planQuery(
+                    AiQueryPlanRequest(
+                        question = trimmed,
+                        nowEpochMs = clock.millis(),
+                        zoneId = clock.zone.id,
+                    ),
+                )
+            }.getOrNull()
         } else {
             null
         }
 
-        val hasNotificationIntent = notificationIntent.containsMatchIn(trimmed)
-        val searchQuery = meaningfulQuery(trimmed)
+        val queries = buildList {
+            modelPlan?.semanticQueries.orEmpty().forEach { query ->
+                query.trim().takeIf(String::isNotBlank)?.let(::add)
+            }
+            anchorQuery.takeIf(String::isNotBlank)?.let(::add)
+            trimmed.takeIf(String::isNotBlank)?.let(::add)
+        }
+            .distinctBy { it.lowercase() }
+            .take(MAX_QUERY_VARIANTS)
 
-        return SearchRequest(
-            query = searchQuery.ifBlank { trimmed },
-            from = target?.minus(TIME_RADIUS)?.toInstant(),
-            to = target?.plus(TIME_RADIUS)?.toInstant(),
-            kinds = if (hasNotificationIntent) setOf(MemoryKind.NOTIFICATION) else emptySet(),
+        val softKinds = modelPlan?.softKindHints.orEmpty()
+            .mapNotNull { hint -> runCatching { MemoryKind.valueOf(hint) }.getOrNull() }
+            .toSet()
+        val relations = modelPlan?.relationHints.orEmpty().map(String::uppercase).toSet()
+
+        return AskSearchPlan(
+            queries = queries.ifEmpty { listOf(trimmed) },
+            from = temporal?.from,
+            to = temporal?.to,
+            softKindHints = softKinds,
+            relationHints = relations,
+            usedModelPlanner = modelPlan != null,
         )
+    }
+
+    private fun explicitTemporalWindow(question: String, clock: Clock): TemporalWindow? {
+        val now = ZonedDateTime.now(clock)
+        val time = parseTime(question)?.time
+        val explicitDate = when {
+            yesterdayWords.containsMatchIn(question) -> now.toLocalDate().minusDays(1)
+            todayWords.containsMatchIn(question) -> now.toLocalDate()
+            else -> null
+        }
+
+        if (time != null) {
+            val date = explicitDate ?: nearestPastDate(now, time)
+            val target = ZonedDateTime.of(date, time, now.zone)
+            return TemporalWindow(
+                from = target.minus(TIME_RADIUS).toInstant(),
+                to = target.plus(TIME_RADIUS).toInstant(),
+            )
+        }
+
+        if (explicitDate != null) {
+            val start = explicitDate.atStartOfDay(now.zone)
+            return TemporalWindow(start.toInstant(), start.plusDays(1).toInstant())
+        }
+
+        return null
     }
 
     private fun nearestPastDate(now: ZonedDateTime, time: LocalTime): LocalDate {
@@ -78,7 +133,7 @@ internal object AskQueryPlanner {
         return Regex("[\\p{L}\\p{N}_@#.+/-]+")
             .findAll(cleaned)
             .map { it.value }
-            .filter { token -> token.lowercase() !in stopWords }
+            .filter { token -> token.lowercase() !in scaffoldingWords }
             .distinctBy(String::lowercase)
             .joinToString(" ")
     }
@@ -102,7 +157,9 @@ internal object AskQueryPlanner {
     }
 
     private data class ParsedTime(val time: LocalTime)
+    private data class TemporalWindow(val from: Instant, val to: Instant)
 
-    private val TIME_RADIUS: Duration = Duration.ofMinutes(75)
+    private val TIME_RADIUS: Duration = Duration.ofMinutes(90)
     private val FUTURE_TOLERANCE: Duration = Duration.ofMinutes(30)
+    private const val MAX_QUERY_VARIANTS = 6
 }
