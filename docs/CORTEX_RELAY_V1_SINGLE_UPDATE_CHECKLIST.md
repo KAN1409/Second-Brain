@@ -12,6 +12,12 @@ Status legend:
 - ✅ GREEN — implemented and validated enough for its current gate
 - ❌ RED — incomplete or failed validation; blocks v1.0 acceptance
 
+## v1.0 acceptance status
+
+- ✅ **ALL IMPLEMENTATION / ACCEPTANCE BLOCKERS 1–8 ARE GREEN.**
+- ✅ Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) passed the combined real-device acceptance gate.
+- ✅ Durable recovery, exact Cortex ACK completion, duplicate suppression, MessagingStyle delta delivery, multi-account identity, lifecycle tracking, evidence normalization/provenance and conservative classification have all been exercised at their required acceptance level.
+
 ## Already green
 
 - ✅ **Android capture works** — NotificationListener capture is running and stored events are visible in Relay diagnostics.
@@ -72,6 +78,18 @@ Real-device durable-outbox acceptance was repeated with the corrected helper so 
 - ✅ No new Relay capture occurred during completion (`captured = 0`), so recovery completion did not create a second logical evidence row in Relay.
 - ✅ Retry accounting is explained: repeated bind/retry incidents occurred only while Cortex was intentionally disabled; once Cortex returned, one send completed with one ACK and zero backlog.
 
+### Candidate 3 — live MessagingStyle delta PASSED
+
+A final real-device WhatsApp test kept the first notification live and delivered a second message in the same conversation.
+
+- ✅ The first useful child event was captured as `POSTED`, classified `HUMAN_MESSAGE`, forwarded once and ACKed by Cortex as signal `7973`.
+- ✅ The later update for the same notification/conversation was captured as `UPDATED` with `update_sequence = 2`.
+- ✅ Relay generated a distinct logical delta identity `signal-message-delta_cab45e21e295e341584ed18c21a32d72` for the new message evidence instead of replaying the original notification snapshot as the same logical signal.
+- ✅ The delta was classified `HUMAN_MESSAGE`, forwarded once and ACKed by Cortex as signal `7974`.
+- ✅ The matching Android group-summary update remained local with `DROP_CONFIRMED_NOISE`, zero send attempts and zero Cortex signal id.
+- ✅ The same `conversation_identity` and `source_profile_identity` were preserved across the original child notification and the new-message delta.
+- ✅ Diagnostic ended with `rejected_by_cortex = 0`, `waiting_or_in_flight = 0`, and no new unexplained delivery issue incidents.
+
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
 - ✅ **1. Durable outbox across process death / reboot — end-to-end process-death recovery and final delivery proven**
@@ -83,16 +101,17 @@ Real-device durable-outbox acceptance was repeated with the corrected helper so 
   - Final recovered-process diagnostic showed one send attempt, one ACK, zero rejection and zero waiting backlog.
   - Diagnostics expose exact `restored_pending_event_ids` for device acceptance.
 
-- ✅ **2. Notification lifecycle tracking — implementation + basic real-device behavior validated**
+- ✅ **2. Notification lifecycle tracking — implementation + real-device behavior validated**
   - Durable per-notification state tracks `POSTED → UPDATED → REMOVED` using stable Android/source identity.
   - Updates retain generation and sequence instead of becoming unrelated snapshots by default.
   - A removal closes the current notification instance; a later repost starts a new generation.
+  - Real-device diagnostics observed POSTED and UPDATED transitions plus exact duplicate update suppression.
 
-- ✅ **3. Meaningful delta / duplicate evidence — real-device duplicate/classification path PASSED**
+- ✅ **3. Meaningful delta / duplicate evidence — real-device PASSED**
   - ✅ Exact repeated snapshots are suppressed as duplicates.
   - ✅ Android `FLAG_GROUP_SUMMARY` containers are retained locally but suppressed from Cortex delivery while grouped child notifications remain forwardable.
   - ✅ Candidate 3 real-device test produced exactly one Cortex-delivered `HUMAN_MESSAGE` child per tested WhatsApp message while the matching summary stayed local.
-  - ✅ MessagingStyle updates identify genuinely new structured messages and send only their evidence delta in implementation tests.
+  - ✅ A real live-notification WhatsApp update produced a distinct `signal-message-delta_...` logical identity, one send attempt and one Cortex ACK (`signal 7974`) while preserving the same conversation/source identities.
   - ✅ Deterministic percentage/progress-only machine churn is retained locally for forensics but suppressed from Cortex delivery.
 
 - ✅ **4. Multi-account / conversation identity — real-device proof PASSED**
@@ -120,18 +139,18 @@ Real-device durable-outbox acceptance was repeated with the corrected helper so 
   - Confirmed Android container/control surfaces and deterministic machine churn can be suppressed while uncertain evidence is preserved.
   - Personal priority/relevance remains Cortex's responsibility.
 
-## DEVICE ACCEPTANCE GATE — candidate 3 is current
+## DEVICE ACCEPTANCE GATE — candidate 3 PASSED
 
-- ❌ **8. One combined real-device acceptance test**
+- ✅ **8. One combined real-device acceptance test**
   - ✅ Cortex available: real WhatsApp messages → exactly one useful `HUMAN_MESSAGE` child delivery each → correlated ACK / Cortex signal id; Android group summaries stayed local/filtered.
   - ✅ Cortex unavailable: real message persisted in durable outbox and remained waiting.
   - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` was reported.
   - ✅ Restore Cortex → same recovered pending signal delivered with one ingest attempt, one correlated ACK, Cortex signal `7972`, and waiting returned to zero.
-  - ✅ Updated/summary notification behavior tested so far does not create duplicate Cortex evidence for the WhatsApp cases exercised.
-  - ❌ New MessagingStyle message inside an already-live updated notification still needs explicit real-device delta proof.
+  - ✅ Updated/summary notification behavior did not create duplicate Cortex evidence for the WhatsApp cases exercised.
+  - ✅ New MessagingStyle message inside an already-live updated notification produced a distinct message-delta logical signal and a single correlated Cortex ACK (`signal 7974`).
   - ✅ Two WhatsApp account/profile surfaces are proven distinguishable where Android evidence permits.
   - ✅ Confirmed Android group-summary/container noise remains local and does not consume Cortex delivery.
-  - ✅ Final recovery diagnostic shows zero unexplained backlog/rejections; retry incidents are explained by Cortex being intentionally disabled during the test.
+  - ✅ Final diagnostics show zero unexplained backlog/rejections; retry incidents are explained by Cortex being intentionally disabled during the durable-outbox test.
 
 ## Explicitly not required before v1.0
 
