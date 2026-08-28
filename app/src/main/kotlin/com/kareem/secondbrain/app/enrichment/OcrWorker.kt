@@ -9,6 +9,7 @@ import com.kareem.secondbrain.ai.api.OcrEngine
 import com.kareem.secondbrain.core.common.TextFingerprint
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.domain.AssetRepository
+import com.kareem.secondbrain.domain.MemorySearchRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import org.json.JSONObject
@@ -20,6 +21,7 @@ class OcrWorker @AssistedInject constructor(
     private val assets: AssetRepository,
     private val enrichment: EnrichmentDao,
     private val ocr: OcrEngine,
+    private val search: MemorySearchRepository,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val eventId = inputData.getString(WorkManagerEnrichmentScheduler.KEY_EVENT_ID) ?: return Result.failure()
@@ -40,6 +42,7 @@ class OcrWorker @AssistedInject constructor(
                 metadata,
             )
             enrichment.updateMemoryBody(eventId, text.ifBlank { "No text detected" }, System.currentTimeMillis())
+            enrichment.getMemoryByEventId(eventId)?.id?.let { memoryId -> search.index(memoryId) }
             Result.success()
         } catch (t: Throwable) {
             enrichment.markFailed(eventId, failureMetadata(t))
