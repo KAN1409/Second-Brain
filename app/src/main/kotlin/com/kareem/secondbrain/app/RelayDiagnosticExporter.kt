@@ -74,6 +74,8 @@ internal object RelayDiagnosticExporter {
                     put("filter_reason", signal.filterReason ?: JSONObject.NULL)
                     put("delivery_state", signal.deliveryState.name)
                     put("delivery_detail", signal.deliveryDetail)
+                    put("send_attempts", signal.sendAttempts)
+                    put("delivery_issue_incidents", signal.deliveryIssueIncidents)
                     put("cortex_status", signal.cortexStatus ?: JSONObject.NULL)
                     put("cortex_signal_id", signal.cortexSignalId)
                 })
