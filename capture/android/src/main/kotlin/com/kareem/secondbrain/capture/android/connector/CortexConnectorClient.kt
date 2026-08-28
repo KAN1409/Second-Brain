@@ -50,17 +50,19 @@ object CortexConnectorClient {
 
     private data class PendingEvent(val raw: String)
 
-    private val queueLock = Any()
-    private val queue = ArrayDeque<PendingEvent>()
-    private val bindActive = AtomicBoolean(false)
-    private val draining = AtomicBoolean(false)
-    private val retryAttempt = AtomicInteger(0)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val queueLock: Any = Any()
+    private val queue: ArrayDeque<PendingEvent> = ArrayDeque()
+    private val bindActive: AtomicBoolean = AtomicBoolean(false)
+    private val draining: AtomicBoolean = AtomicBoolean(false)
+    private val retryAttempt: AtomicInteger = AtomicInteger(0)
+    private val mainHandler: Handler = Handler(Looper.getMainLooper())
 
     @Volatile private var remote: Messenger? = null
     @Volatile private var appContext: Context? = null
 
-    private val retryRunnable = Runnable {
+    private lateinit var connection: ServiceConnection
+
+    private val retryRunnable: Runnable = Runnable {
         val context = appContext ?: return@Runnable
         if (!hasPending() || remote != null) return@Runnable
 
@@ -71,7 +73,7 @@ object CortexConnectorClient {
         ensureBound(context)
     }
 
-    private val replies = Messenger(Handler(Looper.getMainLooper()) { message ->
+    private val replies: Messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
         when (message.what) {
             // V1 ACK/ERROR messages are intentionally accepted without changing the wire contract.
             // V1 has no required per-event correlation field, so send acceptance remains the queue
@@ -81,26 +83,28 @@ object CortexConnectorClient {
         }
     })
 
-    private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            remote = service?.let(::Messenger)
-            retryAttempt.set(0)
-            mainHandler.removeCallbacks(retryRunnable)
-            sendHello()
-            drain()
-        }
+    init {
+        connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                remote = service?.let(::Messenger)
+                retryAttempt.set(0)
+                mainHandler.removeCallbacks(retryRunnable)
+                sendHello()
+                drain()
+            }
 
-        override fun onServiceDisconnected(name: ComponentName?) {
-            remote = null
-            scheduleReconnect()
-        }
+            override fun onServiceDisconnected(name: ComponentName?) {
+                remote = null
+                scheduleReconnect()
+            }
 
-        override fun onBindingDied(name: ComponentName?) {
-            resetBindingAndRetry()
-        }
+            override fun onBindingDied(name: ComponentName?) {
+                resetBindingAndRetry()
+            }
 
-        override fun onNullBinding(name: ComponentName?) {
-            resetBindingAndRetry()
+            override fun onNullBinding(name: ComponentName?) {
+                resetBindingAndRetry()
+            }
         }
     }
 
