@@ -76,9 +76,10 @@ fi
 echo "Signer verified: $ACTUAL_CERT_SHA256"
 echo "Signed APK: $OUT_APK"
 
+INSTALL_APK="$(readlink -f "$OUT_APK" 2>/dev/null || printf '%s' "$OUT_APK")"
 if command -v rish >/dev/null 2>&1; then
   echo "Installing update-in-place through Shizuku/rish..."
-  rish -c "pm install -r '$OUT_APK'"
+  rish -c "pm install -r '$INSTALL_APK'"
   echo "Installed package: $PACKAGE"
 else
   echo "rish not found; APK is signed and ready at: $OUT_APK"
