@@ -153,6 +153,53 @@ class NotificationSignalAnalysisTest {
     }
 
     @Test
+    fun replyableConversationChildWithoutMsgCategoryIsHumanMessage() {
+        val dir = Files.createTempDirectory("relay-replyable-conversation-child").toFile()
+        try {
+            val sample = facts(body = "Kareem: Test 2", category = null, messages = emptyList())
+            val identity = NotificationSignalAnalyzer.notificationIdentity(sample)
+            val lifecycle = DurableNotificationLifecycleStore(dir).observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(sample),
+                NotificationSignalAnalyzer.stableChurnFingerprint(sample),
+                emptyList(),
+                nowEpochMs = 1000,
+            )
+            val analysis = NotificationSignalAnalyzer.analyze(sample, lifecycle)
+
+            assertEquals(RelaySignalType.HUMAN_MESSAGE, analysis.signalType)
+            assertEquals("Android shortcutId", analysis.conversationIdentityBasis)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun nonReplyableShortcutSurfaceWithoutMessageEvidenceStaysOther() {
+        val dir = Files.createTempDirectory("relay-non-message-shortcut").toFile()
+        try {
+            val sample = facts(body = "Generic status", category = null, messages = emptyList()).copy(
+                replyable = false,
+                people = emptyList(),
+                conversationTitle = null,
+            )
+            val identity = NotificationSignalAnalyzer.notificationIdentity(sample)
+            val lifecycle = DurableNotificationLifecycleStore(dir).observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(sample),
+                NotificationSignalAnalyzer.stableChurnFingerprint(sample),
+                emptyList(),
+                nowEpochMs = 1000,
+            )
+            val analysis = NotificationSignalAnalyzer.analyze(sample, lifecycle)
+
+            assertEquals(RelaySignalType.OTHER, analysis.signalType)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun exactSnapshotUpdateIsRecognizedAsDuplicateAcrossStoreInstances() {
         val dir = Files.createTempDirectory("relay-lifecycle-restart").toFile()
         try {
