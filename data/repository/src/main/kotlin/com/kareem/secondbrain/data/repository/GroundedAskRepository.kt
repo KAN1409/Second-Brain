@@ -22,6 +22,7 @@ class GroundedAskRepository(
     private val memoryRepository: MemoryRepository,
     private val policyRepository: CapturePolicyRepository,
     private val aiProvider: AiProvider? = null,
+    private val cloudAiEnabled: suspend () -> Boolean = { false },
 ) : AskRepository {
 
     override suspend fun ask(question: String): AskAnswer {
@@ -45,11 +46,12 @@ class GroundedAskRepository(
             if (bestPerMemory.size >= MAX_EVIDENCE_MEMORIES) break
         }
 
+        val globalCloudEnabled = runCatching { cloudAiEnabled() }.getOrDefault(false)
         val evidence = mutableListOf<AskEvidence>()
         for ((_, hit) in bestPerMemory) {
             val memory = memoryRepository.getMemory(hit.memoryId) ?: continue
             val sourcePackage = memory.sourcePackage
-            val cloudEligible = sourcePackage == null || runCatching {
+            val policyAllowsCloud = sourcePackage == null || runCatching {
                 policyRepository.get(sourcePackage).allowAiUpload
             }.getOrDefault(false)
             val excerpt = buildString {
@@ -69,7 +71,7 @@ class GroundedAskRepository(
                 sourceLabel = sourcePackage ?: memory.kind.name,
                 occurredAt = memory.startedAt,
                 retrievalScore = hit.score.coerceIn(0.0, 1.0),
-                cloudEligible = cloudEligible,
+                cloudEligible = globalCloudEnabled && policyAllowsCloud,
             )
         }
 
@@ -86,7 +88,7 @@ class GroundedAskRepository(
         }
 
         val cloudEvidence = evidence.filter(AskEvidence::cloudEligible)
-        val blockedCount = evidence.size - cloudEvidence.size
+        val blockedCount = if (globalCloudEnabled) evidence.size - cloudEvidence.size else 0
         var providerUnavailable = false
         val provider = aiProvider
         val providerResponse = if (provider != null && cloudEvidence.isNotEmpty()) {
@@ -135,6 +137,8 @@ class GroundedAskRepository(
         }
 
         val synthesisMessage = when {
+            !globalCloudEnabled ->
+                "Cloud synthesis is off. Showing retrieved evidence locally."
             providerResponse?.insufficientEvidence == true ->
                 "I found related memories, but there isn't enough directly supported evidence for a confident answer."
             cloudEvidence.isEmpty() ->
@@ -193,8 +197,10 @@ internal data class ValidatedClaim(
 )
 
 internal object GroundedClaimValidator {
-    private const val MIN_SUPPORT_SCORE = 0.15
+    private const val MIN_SUPPORT_SCORE = 0.60
     private val tokenRegex = Regex("[\\p{L}\\p{N}]+")
+    private val numberRegex = Regex("\\d+(?:[.:]\\d+)?")
+    private val polarityMarkers = setOf("not", "never", "no", "without", "مش", "ليس", "لن", "لم")
     private val stopWords = setOf(
         "the", "a", "an", "is", "are", "was", "were", "to", "of", "and", "or", "in", "on", "at", "for", "with",
         "that", "this", "it", "he", "she", "they", "قال", "قالت", "هو", "هي", "في", "من", "على", "إلى", "الى", "عن",
@@ -220,6 +226,15 @@ internal object GroundedClaimValidator {
         val claimTokens = meaningfulTokens(claim)
         if (claimTokens.isEmpty()) return 0.0
         val evidenceTokens = meaningfulTokens(evidence).toHashSet()
+
+        val claimNumbers = numberRegex.findAll(claim).map { it.value }.toSet()
+        val evidenceNumbers = numberRegex.findAll(evidence).map { it.value }.toSet()
+        if (!evidenceNumbers.containsAll(claimNumbers)) return 0.0
+
+        val claimPolarity = claimTokens.filter { it in polarityMarkers }.toSet()
+        val evidencePolarity = evidenceTokens.filter { it in polarityMarkers }.toSet()
+        if (!evidencePolarity.containsAll(claimPolarity)) return 0.0
+
         val overlap = claimTokens.count(evidenceTokens::contains)
         if (overlap == 0) return 0.0
         return (overlap / minOf(claimTokens.size, 8).toDouble()).coerceIn(0.0, 1.0)
