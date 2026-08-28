@@ -57,7 +57,7 @@ class AskQueryPlannerTest {
         val provider = PlanningProvider(
             AiQueryPlanResponse(
                 semanticQueries = listOf("Kareem activity", "Kareem shared item"),
-                softKindHints = listOf("NOTIFICATION", "FILE", "SCREEN_CONTEXT"),
+                softKindHints = listOf("NOTIFICATION", "NOTE", "SCREEN_CONTEXT"),
                 relationHints = listOf("AROUND"),
             ),
         )
@@ -71,7 +71,7 @@ class AskQueryPlannerTest {
 
         assertTrue(plan.usedModelPlanner)
         assertTrue(plan.queries.contains("Kareem activity"))
-        assertEquals(setOf(MemoryKind.NOTIFICATION, MemoryKind.FILE, MemoryKind.SCREEN_CONTEXT), plan.softKindHints)
+        assertEquals(setOf(MemoryKind.NOTIFICATION, MemoryKind.NOTE, MemoryKind.SCREEN_CONTEXT), plan.softKindHints)
         assertEquals(setOf("AROUND"), plan.relationHints)
         assertEquals(1, provider.planCalls)
     }
