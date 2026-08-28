@@ -14,8 +14,10 @@ data class NotificationNoiseFacts(
 )
 
 /**
- * Conservative Relay-side classification. Only narrow, deterministic machine churn is suppressed.
- * LOW_VALUE is diagnostic only in V1 and is still forwarded to Cortex.
+ * Conservative Relay-side classification. Only narrow, deterministic machine/control-surface
+ * churn is suppressed. LOW_VALUE is diagnostic only in V1 and is still forwarded to Cortex.
+ *
+ * Important boundary: rules classify notification mechanics, never personal importance.
  */
 object NotificationNoiseClassifier {
     private val percentage = Regex("(?<!\\d)(?:100|[1-9]?\\d)%(?!\\d)")
@@ -38,6 +40,18 @@ object NotificationNoiseClassifier {
             return RelayFilterDecision(
                 state = RelayFilterState.DROP_CONFIRMED_NOISE,
                 reason = "Ongoing SystemUI charging percentage churn",
+            )
+        }
+
+        // Android CATEGORY_TRANSPORT is the platform's semantic category for media playback
+        // controls. When it is also ongoing, the notification is a persistent control surface,
+        // not a discrete app event. Keep it in local capture for forensics, but do not forward
+        // repeated now-playing/control state into Cortex. Other notifications from the same app
+        // (recommendations, downloads, account/security notices, etc.) remain untouched.
+        if (facts.isOngoing && facts.category.equals("transport", ignoreCase = true)) {
+            return RelayFilterDecision(
+                state = RelayFilterState.DROP_CONFIRMED_NOISE,
+                reason = "Ongoing Android media transport control surface",
             )
         }
 
