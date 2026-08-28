@@ -1,0 +1,98 @@
+name: M4 Direct Download Release
+
+on:
+  push:
+    branches:
+      - m4-release-hosting
+    paths:
+      - '.github/workflows/m4-direct-download-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android 17 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --list --include_obsolete > /tmp/sdk-packages.txt
+          if grep -q 'platforms;android-37.0' /tmp/sdk-packages.txt; then
+            PLATFORM='platforms;android-37.0'
+          elif grep -q 'platforms;android-CinnamonBun' /tmp/sdk-packages.txt; then
+            PLATFORM='platforms;android-CinnamonBun'
+          elif grep -q 'platforms;android-37' /tmp/sdk-packages.txt; then
+            PLATFORM='platforms;android-37'
+          else
+            echo 'Android 17 platform package not found'
+            exit 1
+          fi
+          yes | sdkmanager "$PLATFORM" 'build-tools;37.0.0' || true
+          sdkmanager "$PLATFORM" 'build-tools;37.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Unit tests
+        run: gradle test --stacktrace
+
+      - name: Build M4 debug
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Re-sign M4 with permanent key (v2/v3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/second-brain-permanent.p12"
+          SIGNED="$RUNNER_TEMP/Second-Brain-M4-permanent.apk"
+          cat > "$RUNNER_TEMP/key.b64" <<'KEYEOF'
+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
+KEYEOF
+          base64 --decode "$RUNNER_TEMP/key.b64" > "$KEYSTORE"
+          rm -f "$RUNNER_TEMP/key.b64"
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-type PKCS12 \
+            --ks-key-alias secondbrain-permanent \
+            --ks-pass 'pass:oliyPzpiP-sMJNMj3Tn_n5aW4gZX2MN858NdW4pG' \
+            --key-pass 'pass:oliyPzpiP-sMJNMj3Tn_n5aW4gZX2MN858NdW4pG' \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$SIGNED" \
+            app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose --print-certs "$SIGNED"
+          SHA="$(sha256sum "$SIGNED" | awk '{print $1}')"
+          cp tools/migrate-m2-to-m4-template.sh "$RUNNER_TEMP/Second-Brain-Migrate-M2-to-M4.sh"
+          sed -i "s/__APK_SHA__/$SHA/g" "$RUNNER_TEMP/Second-Brain-Migrate-M2-to-M4.sh"
+          chmod +x "$RUNNER_TEMP/Second-Brain-Migrate-M2-to-M4.sh"
+          printf '%s  %s\n' "$SHA" 'Second-Brain-M4-permanent.apk' > "$RUNNER_TEMP/SHA256SUMS.txt"
+
+      - name: Publish direct-download GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='m4-permanent-migration-20260828'
+          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "$TAG" \
+            "$RUNNER_TEMP/Second-Brain-M4-permanent.apk" \
+            "$RUNNER_TEMP/Second-Brain-Migrate-M2-to-M4.sh" \
+            "$RUNNER_TEMP/SHA256SUMS.txt" \
+            --target 26c99cf1cf49c0bb8c207efec80b075e5b7e8788 \
+            --title 'Second Brain M4 Permanent Migration' \
+            --notes 'Permanent-signed M4 migration build and one-click M2 migration script.'
