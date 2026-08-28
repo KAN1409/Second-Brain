@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * Relay remains authoritative for capture. Events are offered to Cortex only after local storage
  * succeeds, and connector failure can never roll back or block that local capture.
  *
- * Wire compatibility is intentionally frozen at Local Bus V1 / CORTEX_INGEST_V1.
+ * Wire compatibility is intentionally frozen at Local Bus V1 / CORTEX_INGEST_V1. V1 already
+ * returns event_id/status/signal_id for ingest replies, so delivery is now dequeued only after a
+ * correlated Cortex ACK rather than after Messenger.send().
  */
 object CortexConnectorClient {
     private const val TAG = "CortexConnector"
@@ -43,15 +45,22 @@ object CortexConnectorClient {
     private const val MAX_PENDING = 128
     private const val MAX_PAYLOAD_BYTES = 128 * 1024
     private const val MAX_RETRY_DELAY_MS = 30_000L
+    private const val ACK_TIMEOUT_MS = 8_000L
 
     private const val KEY_CONNECTOR_ID = "connector_id"
     private const val KEY_CAPABILITIES_JSON = "capabilities_json"
     private const val KEY_EVENT_JSON = "event_json"
+    private const val KEY_EVENT_ID = "event_id"
+    private const val KEY_STATUS = "status"
+    private const val KEY_DETAIL = "detail"
+    private const val KEY_SIGNAL_ID = "signal_id"
 
     private data class PendingEvent(
         val eventId: String,
         val raw: String,
-    )
+    ) {
+        val wireEventId: String = "sb_$eventId"
+    }
 
     private val queueLock: Any = Any()
     private val queue: ArrayDeque<PendingEvent> = ArrayDeque()
@@ -62,30 +71,45 @@ object CortexConnectorClient {
 
     @Volatile private var remote: Messenger? = null
     @Volatile private var appContext: Context? = null
+    @Volatile private var endpointReady: Boolean = false
+    @Volatile private var inFlight: PendingEvent? = null
 
     private lateinit var connection: ServiceConnection
 
     private val retryRunnable: Runnable = Runnable {
         val context = appContext ?: return@Runnable
         if (!hasPending() || remote != null) return@Runnable
-
-        // A bind can become stale without delivering a usable Messenger. Reset it before retrying.
-        if (bindActive.getAndSet(false)) {
-            runCatching { context.unbindService(connection) }
-        }
+        if (bindActive.getAndSet(false)) runCatching { context.unbindService(connection) }
         ensureBound(context)
     }
 
     private val replies: Messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
+        val data = message.data ?: Bundle.EMPTY
+        val eventId = data.getString(KEY_EVENT_ID).orEmpty().trim()
+        val status = data.getString(KEY_STATUS).orEmpty().trim()
+        val detail = data.getString(KEY_DETAIL).orEmpty().trim()
+        val signalId = data.getLong(KEY_SIGNAL_ID, 0L)
         when (message.what) {
             MSG_ACK -> {
-                // V1 ACK has no required per-event correlation field. It proves endpoint response,
-                // not delivery of a specific queued signal.
-                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTED)
+                if (eventId.isEmpty()) {
+                    endpointReady = true
+                    retryAttempt.set(0)
+                    RelayRuntimeDiagnostics.markEndpointAck(status.ifEmpty { "READY" })
+                    drain()
+                } else {
+                    handleIngestAck(eventId, status.ifEmpty { "ACCEPTED" }, signalId)
+                }
                 true
             }
             MSG_ERROR -> {
-                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus V1 returned an uncorrelated error")
+                if (eventId.isEmpty()) {
+                    RelayRuntimeDiagnostics.markFailure(
+                        listOf("Cortex Local Bus error", status, detail).filter { it.isNotBlank() }.joinToString(" · "),
+                    )
+                    resetBindingAndRetry()
+                } else {
+                    handleIngestError(eventId, status.ifEmpty { "INGEST_FAILED" }, detail)
+                }
                 true
             }
             else -> false
@@ -96,17 +120,19 @@ object CortexConnectorClient {
         connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 remote = service?.let(::Messenger)
+                endpointReady = false
                 retryAttempt.set(0)
                 mainHandler.removeCallbacks(retryRunnable)
                 RelayRuntimeDiagnostics.markConnection(
-                    if (remote != null) RelayConnectionState.CONNECTED else RelayConnectionState.DISCONNECTED,
+                    if (remote != null) RelayConnectionState.CONNECTING else RelayConnectionState.DISCONNECTED,
                 )
-                sendHello()
-                drain()
+                if (remote != null) sendHello() else scheduleReconnect()
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
                 remote = null
+                endpointReady = false
+                inFlight = null
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
                 scheduleReconnect()
             }
@@ -128,11 +154,24 @@ object CortexConnectorClient {
         var dropped: PendingEvent? = null
         val waiting = synchronized(queueLock) {
             while (queue.size >= MAX_PENDING) {
+                val head = queue.peekFirst()
+                if (head != null && head === inFlight) break
                 dropped = queue.removeFirst()
                 Log.w(TAG, "Tunnel queue full; dropped oldest delivery copy (local capture retained)")
             }
-            queue.addLast(PendingEvent(eventId = storedEventId, raw = raw))
+            if (queue.size >= MAX_PENDING) {
+                dropped = PendingEvent(storedEventId, raw)
+            } else {
+                queue.addLast(PendingEvent(eventId = storedEventId, raw = raw))
+            }
             queue.size
+        }
+        if (dropped?.eventId == storedEventId) {
+            RelayRuntimeDiagnostics.markDroppedDeliveryCopy(
+                eventId = storedEventId,
+                reason = "V1 queue full while an event was awaiting ACK; local capture retained",
+            )
+            return
         }
         RelayRuntimeDiagnostics.markQueued(storedEventId, waiting)
         dropped?.let { event ->
@@ -150,9 +189,7 @@ object CortexConnectorClient {
         if (remote != null || !bindActive.compareAndSet(false, true)) return
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)
         try {
-            val intent = Intent(ACTION_BIND).apply {
-                component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE)
-            }
+            val intent = Intent(ACTION_BIND).apply { component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE) }
             if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
                 bindActive.set(false)
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
@@ -163,6 +200,7 @@ object CortexConnectorClient {
             Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")
             bindActive.set(false)
             remote = null
+            endpointReady = false
             RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
             RelayRuntimeDiagnostics.markFailure("Cortex bind failed: ${t.javaClass.simpleName}")
             scheduleReconnect()
@@ -186,50 +224,117 @@ object CortexConnectorClient {
         }
     }
 
-    /** Serializes all sends so two notification coroutines cannot transmit the same queue head. */
+    /** Serializes all sends and leaves the queue head in place until Cortex ACKs that exact event. */
     private fun drain() {
         if (!draining.compareAndSet(false, true)) return
         try {
-            while (true) {
-                val target = remote ?: run {
-                    appContext?.let(::ensureBound)
-                    scheduleReconnect()
-                    return
-                }
-                val pending = synchronized(queueLock) { queue.peekFirst() } ?: return
-                try {
-                    val message = Message.obtain(null, MSG_INGEST)
-                    message.replyTo = replies
-                    message.data = Bundle().apply { putString(KEY_EVENT_JSON, pending.raw) }
-                    target.send(message)
-                    val waiting = synchronized(queueLock) {
-                        if (queue.peekFirst() === pending) queue.removeFirst()
-                        queue.size
-                    }
-                    // In V1 this means Messenger.send() accepted the event. It is deliberately not
-                    // represented as a correlated ACK; that belongs to the coordinated V2 protocol.
-                    RelayRuntimeDiagnostics.markForwarded(pending.eventId, waiting)
-                } catch (t: Throwable) {
-                    val reason = "Cortex send failed: ${t.javaClass.simpleName}; retry scheduled"
-                    Log.w(TAG, reason)
-                    RelayRuntimeDiagnostics.markRetry(pending.eventId, reason)
-                    resetBindingAndRetry()
-                    return
-                }
+            if (!endpointReady) {
+                appContext?.let(::ensureBound)
+                return
+            }
+            val target = remote ?: run {
+                appContext?.let(::ensureBound)
+                scheduleReconnect()
+                return
+            }
+            if (inFlight != null) return
+            val pending = synchronized(queueLock) { queue.peekFirst() } ?: return
+            inFlight = pending
+            try {
+                val message = Message.obtain(null, MSG_INGEST)
+                message.replyTo = replies
+                message.data = Bundle().apply { putString(KEY_EVENT_JSON, pending.raw) }
+                target.send(message)
+                RelayRuntimeDiagnostics.markSentAwaitingAck(pending.eventId, synchronized(queueLock) { queue.size })
+                scheduleAckTimeout(pending)
+            } catch (t: Throwable) {
+                inFlight = null
+                val reason = "Cortex send failed: ${t.javaClass.simpleName}; retry scheduled"
+                Log.w(TAG, reason)
+                RelayRuntimeDiagnostics.markRetry(pending.eventId, reason)
+                resetBindingAndRetry()
             }
         } finally {
             draining.set(false)
-            if (remote != null && hasPending()) drain()
         }
     }
 
+    private fun handleIngestAck(wireEventId: String, status: String, signalId: Long) {
+        val pending = inFlight
+        if (pending == null || pending.wireEventId != wireEventId) {
+            RelayRuntimeDiagnostics.markFailure("Unexpected Cortex ACK for $wireEventId; current=${pending?.wireEventId ?: "none"}")
+            return
+        }
+        cancelAckTimeout()
+        val waiting = synchronized(queueLock) {
+            val head = queue.peekFirst()
+            if (head != null && head.wireEventId == wireEventId) queue.removeFirst()
+            queue.size
+        }
+        inFlight = null
+        retryAttempt.set(0)
+        RelayRuntimeDiagnostics.markForwarded(pending.eventId, waiting, status, signalId)
+        drain()
+    }
+
+    private fun handleIngestError(wireEventId: String, status: String, detail: String) {
+        val pending = inFlight
+        if (pending == null || pending.wireEventId != wireEventId) {
+            RelayRuntimeDiagnostics.markFailure("Unexpected Cortex ERROR for $wireEventId · $status")
+            return
+        }
+        cancelAckTimeout()
+        inFlight = null
+        if (terminalRejection(status)) {
+            val waiting = synchronized(queueLock) {
+                val head = queue.peekFirst()
+                if (head != null && head.wireEventId == wireEventId) queue.removeFirst()
+                queue.size
+            }
+            RelayRuntimeDiagnostics.markRejected(pending.eventId, waiting, status, detail)
+            drain()
+        } else {
+            RelayRuntimeDiagnostics.markRetry(
+                pending.eventId,
+                "Cortex $status${if (detail.isNotBlank()) ": $detail" else ""}; retry scheduled",
+            )
+            resetBindingAndRetry()
+        }
+    }
+
+    private fun terminalRejection(status: String): Boolean = status in setOf(
+        "INVALID_EVENT",
+        "IDENTITY_MISMATCH",
+        "POLICY_BLOCKED",
+        "EMPTY",
+        "UNKNOWN_MESSAGE",
+    )
+
+    private fun scheduleAckTimeout(pending: PendingEvent) {
+        cancelAckTimeout()
+        mainHandler.postDelayed({
+            if (inFlight !== pending) return@postDelayed
+            inFlight = null
+            RelayRuntimeDiagnostics.markRetry(pending.eventId, "Cortex ACK timeout; same event retained for retry")
+            resetBindingAndRetry()
+        }, ACK_TIMEOUT_MS)
+    }
+
+    private fun cancelAckTimeout() {
+        // ACK timeout callbacks self-identify against inFlight. Clearing callbacks here also removes
+        // obsolete timeout/reconnect work before immediately draining the next queue item.
+        mainHandler.removeCallbacksAndMessages(ACK_TIMEOUT_TOKEN)
+    }
+
+    private val ACK_TIMEOUT_TOKEN = Any()
+
     private fun resetBindingAndRetry() {
+        endpointReady = false
         remote = null
+        inFlight = null
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
         val context = appContext
-        if (bindActive.getAndSet(false) && context != null) {
-            runCatching { context.unbindService(connection) }
-        }
+        if (bindActive.getAndSet(false) && context != null) runCatching { context.unbindService(connection) }
         scheduleReconnect()
     }
 
@@ -243,10 +348,7 @@ object CortexConnectorClient {
 
     private fun hasPending(): Boolean = synchronized(queueLock) { queue.isNotEmpty() }
 
-    private fun buildNotificationEvent(
-        command: CaptureCommand.Notification,
-        storedEventId: String,
-    ): JSONObject {
+    private fun buildNotificationEvent(command: CaptureCommand.Notification, storedEventId: String): JSONObject {
         val metadata = parseMetadata(command.metadataJson)
         val full = eventJson(
             command = command,
@@ -262,10 +364,7 @@ object CortexConnectorClient {
 
         val compactMetadata = compactMetadata(metadata)
         val compactMessages = command.messages.takeLast(12).map { item ->
-            item.copy(
-                sender = item.sender?.take(512),
-                text = item.text.take(2_048),
-            )
+            item.copy(sender = item.sender?.take(512), text = item.text.take(2_048))
         }
         val compact = eventJson(
             command = command,
@@ -279,7 +378,6 @@ object CortexConnectorClient {
         ).apply { put("payload_truncated", true) }
         if (sizeBytes(compact) <= MAX_PAYLOAD_BYTES) return compact
 
-        // Defensive final cap for pathological third-party notification payloads.
         return eventJson(
             command = command,
             storedEventId = storedEventId,
@@ -344,6 +442,5 @@ object CortexConnectorClient {
         put("payload_truncated", true)
     }
 
-    private fun sizeBytes(value: JSONObject): Int =
-        value.toString().toByteArray(StandardCharsets.UTF_8).size
+    private fun sizeBytes(value: JSONObject): Int = value.toString().toByteArray(StandardCharsets.UTF_8).size
 }
