@@ -142,8 +142,6 @@ object NotificationSignalAnalyzer {
         )
         val (conversationBasis, conversationEvidence) = conversationBasis(facts)
         val conversationIdentity = stableId("conversation", sourceProfileIdentity, conversationBasis)
-        val entities = extractEntities(facts)
-        val signalType = classifySignalType(facts, entities)
         val change = when {
             lifecycle.isNewInstance -> NotificationMeaningfulChange.NEW_POST
             lifecycle.newMessageFingerprints.isNotEmpty() -> NotificationMeaningfulChange.NEW_MESSAGES
@@ -153,6 +151,18 @@ object NotificationSignalAnalyzer {
             }
             else -> NotificationMeaningfulChange.CONTENT_CHANGED
         }
+        val evidenceFacts = if (change == NotificationMeaningfulChange.NEW_MESSAGES) {
+            val newMessages = facts.messages.filter { messageFingerprint(it) in lifecycle.newMessageFingerprints }
+            facts.copy(
+                body = newMessages.lastOrNull()?.text,
+                expandedText = null,
+                messages = newMessages,
+            )
+        } else {
+            facts
+        }
+        val entities = extractEntities(evidenceFacts)
+        val signalType = classifySignalType(evidenceFacts, entities)
         val changeReason = when (change) {
             NotificationMeaningfulChange.NEW_POST -> "New Android notification instance"
             NotificationMeaningfulChange.NEW_MESSAGES -> "Updated notification contains ${lifecycle.newMessageFingerprints.size} new structured message(s)"
