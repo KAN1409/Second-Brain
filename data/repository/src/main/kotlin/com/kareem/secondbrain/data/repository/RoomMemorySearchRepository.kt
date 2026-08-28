@@ -11,6 +11,8 @@ import com.kareem.secondbrain.core.search.HybridRanker
 import com.kareem.secondbrain.core.search.MemoryChunker
 import com.kareem.secondbrain.core.search.SearchCandidate
 import com.kareem.secondbrain.core.search.SearchTextScorer
+import com.kareem.secondbrain.core.search.SemanticAccelerationIndex
+import com.kareem.secondbrain.core.search.SemanticIndexDocument
 import com.kareem.secondbrain.core.search.VectorCodec
 import com.kareem.secondbrain.domain.MemorySearchRepository
 import java.time.Clock
@@ -18,6 +20,7 @@ import java.time.Clock
 class RoomMemorySearchRepository(
     private val dao: SearchDao,
     private val embedder: Embedder? = null,
+    private val semanticAccelerationIndex: SemanticAccelerationIndex? = null,
     private val clock: Clock = Clock.systemUTC(),
 ) : MemorySearchRepository {
 
@@ -53,6 +56,10 @@ class RoomMemorySearchRepository(
                 .associateBy(MemoryEmbeddingEntity::chunk_id)
         } else {
             emptyMap()
+        }
+
+        if (activeEmbedder != null && embeddingByChunk.isNotEmpty()) {
+            mirrorExistingEmbeddings(chunks, embeddingByChunk, activeEmbedder.signature)
         }
 
         val hasSourceFilter = request.appPackages.isNotEmpty() || request.kinds.isNotEmpty()
@@ -151,6 +158,42 @@ class RoomMemorySearchRepository(
             },
         )
         dao.markEmbedded(missing.map(MemoryChunkEntity::id), engine.signature)
+        semanticAccelerationIndex?.let { accelerator ->
+            runCatching {
+                accelerator.upsert(
+                    missing.zip(vectors).map { (chunk, vector) ->
+                        SemanticIndexDocument(
+                            chunkId = chunk.id,
+                            memoryId = chunk.memory_id,
+                            text = chunk.text,
+                            vector = vector,
+                            modelSignature = engine.signature,
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    private suspend fun mirrorExistingEmbeddings(
+        chunks: List<MemoryChunkEntity>,
+        embeddings: Map<String, MemoryEmbeddingEntity>,
+        modelSignature: String,
+    ) {
+        val accelerator = semanticAccelerationIndex ?: return
+        val documents = chunks.mapNotNull { chunk ->
+            val stored = embeddings[chunk.id] ?: return@mapNotNull null
+            val vector = runCatching { VectorCodec.decode(stored.vector_blob, stored.dimensions) }.getOrNull()
+                ?: return@mapNotNull null
+            SemanticIndexDocument(
+                chunkId = chunk.id,
+                memoryId = chunk.memory_id,
+                text = chunk.text,
+                vector = vector,
+                modelSignature = modelSignature,
+            )
+        }
+        if (documents.isNotEmpty()) runCatching { accelerator.upsert(documents) }
     }
 
     private companion object {

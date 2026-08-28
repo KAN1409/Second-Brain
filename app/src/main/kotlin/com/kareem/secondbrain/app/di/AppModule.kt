@@ -23,6 +23,8 @@ import com.kareem.secondbrain.core.database.CaptureWriteDao
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.core.database.MemoryDao
 import com.kareem.secondbrain.core.database.SearchDao
+import com.kareem.secondbrain.core.search.AppSearchSemanticAccelerationIndex
+import com.kareem.secondbrain.core.search.SemanticAccelerationIndex
 import com.kareem.secondbrain.data.repository.RoomAppSessionRepository
 import com.kareem.secondbrain.data.repository.RoomAssetRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureHealthRepository
@@ -107,10 +109,16 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideSemanticAccelerationIndex(@ApplicationContext context: Context): SemanticAccelerationIndex =
+        AppSearchSemanticAccelerationIndex(context)
+
+    @Provides
+    @Singleton
     fun provideMemorySearchRepository(
         searchDao: SearchDao,
         embedder: Embedder,
-    ): MemorySearchRepository = RoomMemorySearchRepository(searchDao, embedder)
+        semanticAccelerationIndex: SemanticAccelerationIndex,
+    ): MemorySearchRepository = RoomMemorySearchRepository(searchDao, embedder, semanticAccelerationIndex)
 
     @Provides
     @Singleton
