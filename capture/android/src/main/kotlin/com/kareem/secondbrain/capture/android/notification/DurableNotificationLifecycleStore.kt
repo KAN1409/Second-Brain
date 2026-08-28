@@ -46,6 +46,7 @@ class DurableNotificationLifecycleStore(private val directory: File) {
         private const val MAGIC = 0x43524C31 // CRL1
         private const val VERSION = 1
         private const val SUFFIX = ".lifecycle"
+        private const val MAX_MESSAGE_FINGERPRINTS = 512
     }
 
     @Synchronized
@@ -66,11 +67,12 @@ class DurableNotificationLifecycleStore(private val directory: File) {
         }
         val sequence = if (newInstance) 0 else previous!!.sequence + 1
         val state = if (newInstance) NotificationLifecycleState.POSTED else NotificationLifecycleState.UPDATED
+        val cappedMessages = messageFingerprints.takeLast(MAX_MESSAGE_FINGERPRINTS)
         val previousMessages = if (newInstance) emptySet() else previous!!.messageFingerprints.toSet()
-        val newMessages = messageFingerprints.filterNot(previousMessages::contains).toSet()
+        val newMessages = cappedMessages.filterNot(previousMessages::contains).toSet()
         val unchanged = !newInstance &&
             previous!!.visibleFingerprint == visibleFingerprint &&
-            previous.messageFingerprints == messageFingerprints
+            previous.messageFingerprints == cappedMessages
         val stableChurnOnly = !newInstance && !unchanged && newMessages.isEmpty() &&
             previous!!.stableChurnFingerprint == stableChurnFingerprint
         val startedAt = if (newInstance) nowEpochMs else previous!!.instanceStartedAtEpochMs
@@ -84,7 +86,7 @@ class DurableNotificationLifecycleStore(private val directory: File) {
                 observedAtEpochMs = nowEpochMs,
                 visibleFingerprint = visibleFingerprint,
                 stableChurnFingerprint = stableChurnFingerprint,
-                messageFingerprints = messageFingerprints,
+                messageFingerprints = cappedMessages,
             ),
         )
         return NotificationLifecycleDecision(
@@ -169,7 +171,7 @@ class DurableNotificationLifecycleStore(private val directory: File) {
         val visible = input.readUTF()
         val stable = input.readUTF()
         val count = input.readInt()
-        check(count in 0..512) { "Invalid message fingerprint count" }
+        check(count in 0..MAX_MESSAGE_FINGERPRINTS) { "Invalid message fingerprint count" }
         val messages = buildList(count) { repeat(count) { add(input.readUTF()) } }
         LifecycleSnapshot(identity, state, generation, sequence, startedAt, observedAt, visible, stable, messages)
     }
@@ -178,6 +180,7 @@ class DurableNotificationLifecycleStore(private val directory: File) {
         ensureDirectory()
         val target = fileFor(snapshot.notificationIdentity)
         val temp = File(directory, ".${target.name}.${System.nanoTime()}.tmp")
+        val messages = snapshot.messageFingerprints.takeLast(MAX_MESSAGE_FINGERPRINTS)
         try {
             FileOutputStream(temp).use { stream ->
                 DataOutputStream(BufferedOutputStream(stream)).use { output ->
@@ -191,8 +194,8 @@ class DurableNotificationLifecycleStore(private val directory: File) {
                     output.writeLong(snapshot.observedAtEpochMs)
                     output.writeUTF(snapshot.visibleFingerprint)
                     output.writeUTF(snapshot.stableChurnFingerprint)
-                    output.writeInt(snapshot.messageFingerprints.size)
-                    snapshot.messageFingerprints.take(512).forEach(output::writeUTF)
+                    output.writeInt(messages.size)
+                    messages.forEach(output::writeUTF)
                     output.flush()
                     stream.fd.sync()
                 }
