@@ -147,6 +147,7 @@ private fun SecondBrainRoot(
     val captureState by captureRepository.observeCaptureState().collectAsState(initial = CaptureState(CaptureMode.RUNNING))
     val memories by memoryRepository.observeTimeline(TimelineRequest()).collectAsState(initial = emptyList())
     val persistedPolicies by policyRepository.observePolicies().collectAsState(initial = emptyList())
+    val cloudAiEnabled by geminiApiKeyStore.observeCloudEnabled().collectAsState()
     val installedApps by produceState(initialValue = emptyList<InstalledAppEntry>(), installedAppCatalog) {
         value = withContext(Dispatchers.Default) { installedAppCatalog.launchableApps() }
     }
@@ -264,6 +265,7 @@ private fun SecondBrainRoot(
                     embeddingModelSizeBytes = embeddingModelStatus.sizeBytes,
                     embeddingModelMessage = embeddingModelMessage,
                     geminiKeyConfigured = geminiKeyConfigured,
+                    cloudAiEnabled = cloudAiEnabled,
                     geminiKeyMessage = geminiKeyMessage,
                     onToggleCapture = toggleCapture,
                     onNotificationAccess = openNotificationAccess,
@@ -278,7 +280,7 @@ private fun SecondBrainRoot(
                             runCatching { geminiApiKeyStore.save(apiKey) }
                                 .onSuccess {
                                     geminiKeyConfigured = true
-                                    geminiKeyMessage = "Gemini key saved securely."
+                                    geminiKeyMessage = "Gemini key saved securely. Cloud synthesis remains off until enabled."
                                 }
                                 .onFailure { error -> geminiKeyMessage = error.message ?: "Unable to save Gemini key" }
                         }
@@ -288,9 +290,22 @@ private fun SecondBrainRoot(
                             runCatching { geminiApiKeyStore.clear() }
                                 .onSuccess {
                                     geminiKeyConfigured = false
-                                    geminiKeyMessage = "Gemini key removed."
+                                    geminiKeyMessage = "Gemini key removed and cloud synthesis disabled."
                                 }
                                 .onFailure { error -> geminiKeyMessage = error.message ?: "Unable to remove Gemini key" }
+                        }
+                    },
+                    onCloudAiEnabledChanged = { enabled ->
+                        scope.launch {
+                            runCatching { geminiApiKeyStore.setCloudEnabled(enabled) }
+                                .onSuccess {
+                                    geminiKeyMessage = if (enabled) {
+                                        "Cloud synthesis enabled globally. Per-app Allow cloud AI policies still apply."
+                                    } else {
+                                        "Cloud synthesis disabled. Ask will stay evidence-only."
+                                    }
+                                }
+                                .onFailure { error -> geminiKeyMessage = error.message ?: "Unable to change cloud AI setting" }
                         }
                     },
                 )
