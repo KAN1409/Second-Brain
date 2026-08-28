@@ -161,6 +161,7 @@ object CortexConnectorClient {
         val applicationContext = context.applicationContext
         appContext = applicationContext
         var corruptFiles = 0
+        var restoredEventIds: List<String> = emptyList()
         val waiting = synchronized(queueLock) {
             val store = outbox ?: DurableRelayOutbox(File(applicationContext.noBackupFilesDir, OUTBOX_DIRECTORY)).also {
                 outbox = it
@@ -168,6 +169,7 @@ object CortexConnectorClient {
             if (!outboxLoaded) {
                 val loaded = store.loadAll()
                 corruptFiles = loaded.corruptFiles
+                restoredEventIds = loaded.entries.map { it.eventId }
                 queue.clear()
                 loaded.entries.take(MAX_MEMORY_PENDING).forEach { entry ->
                     queue.addLast(PendingEvent(entry.eventId, entry.raw))
@@ -176,7 +178,11 @@ object CortexConnectorClient {
             }
             durableWaitingCountLocked()
         }
-        RelayRuntimeDiagnostics.markWaiting(waiting)
+        if (restoredEventIds.isNotEmpty()) {
+            RelayRuntimeDiagnostics.markRestoredPending(restoredEventIds, waiting)
+        } else {
+            RelayRuntimeDiagnostics.markWaiting(waiting)
+        }
         if (corruptFiles > 0) {
             RelayRuntimeDiagnostics.markFailure(
                 "Durable outbox contains $corruptFiles unreadable entr${if (corruptFiles == 1) "y" else "ies"}; preserved for diagnostics",
