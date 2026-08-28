@@ -3,10 +3,12 @@ package com.kareem.secondbrain.capture.android.notification
 import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import com.kareem.secondbrain.capture.android.connector.CortexConnectorClient
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CaptureHealthRepository
 import com.kareem.secondbrain.domain.CaptureRepository
+import com.kareem.secondbrain.domain.CaptureResult
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +51,16 @@ class BrainNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!captureRunning || sbn.packageName == packageName) return
         val command = sbn.toCaptureCommand()
-        serviceScope.launch { captureRepository.ingest(command) }
+        serviceScope.launch {
+            when (val result = captureRepository.ingest(command)) {
+                is CaptureResult.Stored -> CortexConnectorClient.enqueueNotification(
+                    applicationContext,
+                    command,
+                    result.eventId,
+                )
+                else -> Unit
+            }
+        }
     }
 
     override fun onDestroy() {

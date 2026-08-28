@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 
     <queries>
+        <package android:name="com.kareem.cortex" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
