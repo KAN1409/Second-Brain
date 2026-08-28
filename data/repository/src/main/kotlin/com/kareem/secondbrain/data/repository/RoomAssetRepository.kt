@@ -7,7 +7,6 @@ import com.kareem.secondbrain.core.database.AssetDao
 import com.kareem.secondbrain.core.database.AssetEntity
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.StoredAsset
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -17,10 +16,9 @@ import java.time.Clock
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
-import javax.inject.Inject
 
-class RoomAssetRepository @Inject constructor(
-    @ApplicationContext private val context: Context,
+class RoomAssetRepository(
+    private val context: Context,
     private val assets: AssetDao,
     private val clock: Clock = Clock.systemUTC(),
 ) : AssetRepository {

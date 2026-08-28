@@ -6,10 +6,13 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.kareem.secondbrain.ai.api.ImageInput
 import com.kareem.secondbrain.ai.api.OcrEngine
+import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.CaptureCommand
+import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.CaptureRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
@@ -20,6 +23,7 @@ class TemporaryScreenshotOcrWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val ocr: OcrEngine,
     private val captureRepository: CaptureRepository,
+    private val policyRepository: CapturePolicyRepository,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val packageName = inputData.getString(WorkManagerEnrichmentScheduler.KEY_PACKAGE_NAME) ?: return Result.failure()
@@ -29,6 +33,9 @@ class TemporaryScreenshotOcrWorker @AssistedInject constructor(
         val file = File(path)
         return try {
             if (!file.isFile) return Result.failure()
+            if (captureRepository.observeCaptureState().first().mode != CaptureMode.RUNNING) return Result.success()
+            val policy = policyRepository.get(packageName)
+            if (!policy.accessibility || !policy.ocr) return Result.success()
             val result = ocr.recognize(ImageInput(file.absolutePath, "image/png"))
             if (result.text.isBlank()) return Result.success()
             captureRepository.ingest(
