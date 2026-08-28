@@ -8,4 +8,6 @@ local.properties
 .cxx/
 *.jks
 *.keystore
+*.p12
+.secondbrain-signing/
 /files/models/
