@@ -3,8 +3,9 @@ set -euo pipefail
 
 APK_INPUT="${1:-}"
 KEYSTORE="${SECOND_BRAIN_KEYSTORE:-$HOME/.secondbrain-signing/second-brain-permanent.p12}"
+PASSWORD_FILE="${SECOND_BRAIN_PASSWORD_FILE:-$HOME/.secondbrain-signing/password.txt}"
 ALIAS="secondbrain"
-EXPECTED_CERT_SHA256="fd402eefcec5b"
+EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74"
 PACKAGE="com.kareem.secondbrain"
 OUT_DIR="${HOME}/storage/downloads"
 OUT_APK="${OUT_DIR}/Cortex-Relay-update.apk"
@@ -40,8 +41,12 @@ fi
 mkdir -p "$OUT_DIR"
 cp -f "$APK_INPUT" "$OUT_APK"
 
-read -r -s -p "Permanent keystore password: " KS_PASS
-echo
+if [[ -f "$PASSWORD_FILE" ]]; then
+  KS_PASS="$(cat "$PASSWORD_FILE")"
+else
+  read -r -s -p "Permanent keystore password: " KS_PASS
+  echo
+fi
 
 "$APKSIGNER" sign \
   --ks "$KEYSTORE" \
