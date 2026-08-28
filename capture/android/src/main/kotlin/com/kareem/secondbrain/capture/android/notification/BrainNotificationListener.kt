@@ -81,8 +81,8 @@ class BrainNotificationListener : NotificationListenerService() {
         RelayRuntimeDiagnostics.markLifecycle(lifecycle.state, analysis.change)
 
         // An exact repeat contains no new evidence and the repository would dedupe it anyway.
-        // Deterministic machine churn is different: retain it locally for forensics, then let the
-        // conservative noise gate suppress only its Cortex delivery.
+        // Deterministic machine churn and Android group-summary containers are retained locally,
+        // then the conservative noise gate suppresses only their Cortex delivery.
         if (analysis.change == NotificationMeaningfulChange.EXACT_DUPLICATE) return
 
         val enrichedCommand = baseCommand
@@ -112,7 +112,11 @@ class BrainNotificationListener : NotificationListenerService() {
                         },
                         metadataJson = enrichedCommand.metadataJson,
                         logicalSignalId = analysis.logicalSignalId,
+                        sourceProfileIdentity = analysis.sourceProfileIdentity,
                         notificationIdentity = analysis.notificationIdentity,
+                        notificationInstanceIdentity = analysis.notificationInstanceIdentity,
+                        conversationIdentity = analysis.conversationIdentity,
+                        conversationIdentityBasis = analysis.conversationIdentityBasis,
                         lifecycleState = lifecycle.state.name,
                         updateSequence = lifecycle.sequence,
                         signalType = analysis.signalType.name,
@@ -236,6 +240,7 @@ private fun StatusBarNotification.toNoiseFacts(
     isOngoing = isOngoing,
     category = notification.category,
     channelId = notification.channelId,
+    isGroupSummary = notification.flags and Notification.FLAG_GROUP_SUMMARY != 0,
     meaningfulChange = analysis.change,
     signalType = analysis.signalType,
 )
@@ -279,6 +284,7 @@ private fun StatusBarNotification.toObservation(importance: Int?): NotificationO
     val replyable = actions.any { action ->
         action.remoteInputs.orEmpty().any { remoteInput -> remoteInput.allowFreeFormInput }
     }
+    val isGroupSummary = notification.flags and Notification.FLAG_GROUP_SUMMARY != 0
 
     val metadata = JSONObject().apply {
         put("id", id)
@@ -288,6 +294,7 @@ private fun StatusBarNotification.toObservation(importance: Int?): NotificationO
         put("groupKey", groupKey ?: JSONObject.NULL)
         put("overrideGroupKey", overrideGroupKey ?: JSONObject.NULL)
         put("isGroup", isGroup)
+        put("isGroupSummary", isGroupSummary)
         put("isOngoing", isOngoing)
         put("isClearable", isClearable)
         put("category", notification.category ?: JSONObject.NULL)
