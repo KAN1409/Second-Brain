@@ -11,6 +11,7 @@ data class NotificationNoiseFacts(
     val isOngoing: Boolean,
     val category: String?,
     val channelId: String?,
+    val isGroupSummary: Boolean = false,
     val meaningfulChange: NotificationMeaningfulChange? = null,
     val signalType: RelaySignalType? = null,
 )
@@ -36,6 +37,12 @@ object NotificationNoiseClassifier {
             return RelayFilterDecision(
                 state = RelayFilterState.DROP_CONFIRMED_NOISE,
                 reason = "Only deterministic progress/percentage fields changed",
+            )
+        }
+        if (facts.isGroupSummary) {
+            return RelayFilterDecision(
+                state = RelayFilterState.DROP_CONFIRMED_NOISE,
+                reason = "Android notification group summary; child notifications carry the underlying evidence",
             )
         }
 
