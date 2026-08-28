@@ -215,11 +215,17 @@ object NotificationSignalAnalyzer {
         val category = facts.category.orEmpty().lowercase(Locale.ROOT)
         if (entities.any { it.type == "OTP" }) return RelaySignalType.OTP
         if (category == "call") return RelaySignalType.CALL
-        if (category == "msg") {
-            if (pkg.contains("messaging") || pkg.contains("mms") || pkg.contains("sms")) return RelaySignalType.SMS
-            return RelaySignalType.HUMAN_MESSAGE
-        }
         if (pkg == "com.google.android.gm" || pkg.contains("email") || category == "email") return RelaySignalType.EMAIL
+        val isSmsPackage = pkg.contains("messaging") || pkg.contains("mms") || pkg.contains("sms")
+        val hasStructuredMessageEvidence = facts.messages.isNotEmpty()
+        val hasReplyableConversationEvidence = facts.replyable && (
+            !facts.shortcutId.isNullOrBlank() ||
+                facts.people.isNotEmpty() ||
+                !facts.conversationTitle.isNullOrBlank()
+            )
+        if (category == "msg" || hasStructuredMessageEvidence || hasReplyableConversationEvidence) {
+            return if (isSmsPackage) RelaySignalType.SMS else RelaySignalType.HUMAN_MESSAGE
+        }
         if (pkg.contains("calendar") || category == "event") return RelaySignalType.CALENDAR
         if (pkg.contains("download") || text.contains("download complete") || text.contains("downloaded")) return RelaySignalType.DOWNLOAD
         if (listOf("debit", "credited", "credit", "transaction", "payment", "تحويل", "خصم", "تم ايداع", "تم إيداع").any(text::contains) &&
