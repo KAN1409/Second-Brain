@@ -141,7 +141,14 @@ object AppModule {
         memoryRepository: MemoryRepository,
         policyRepository: CapturePolicyRepository,
         aiProvider: AiProvider,
-    ): AskRepository = GroundedAskRepository(searchRepository, memoryRepository, policyRepository, aiProvider)
+        keyStore: GeminiApiKeyStore,
+    ): AskRepository = GroundedAskRepository(
+        searchRepository = searchRepository,
+        memoryRepository = memoryRepository,
+        policyRepository = policyRepository,
+        aiProvider = aiProvider,
+        cloudAiEnabled = { keyStore.isCloudEnabled() },
+    )
 
     @Provides
     @Singleton
