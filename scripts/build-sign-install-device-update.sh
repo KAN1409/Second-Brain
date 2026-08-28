@@ -43,10 +43,37 @@ cert_of_apk() {
     | tr '[:upper:]' '[:lower:]'
 }
 
+resolve_installed_path() {
+  local output=""
+  local pkg_path=""
+  local attempt
+
+  for attempt in 1 2 3; do
+    output="$(rish -c "pm path $PACKAGE" 2>/dev/null || true)"
+    pkg_path="$(printf '%s\n' "$output" \
+      | tr -d '\r' \
+      | sed -n 's/^package://p' \
+      | head -n1)"
+    [ -n "$pkg_path" ] && {
+      printf '%s\n' "$pkg_path"
+      return 0
+    }
+    sleep 1
+  done
+
+  output="$(rish -c "cmd package path $PACKAGE" 2>/dev/null || true)"
+  pkg_path="$(printf '%s\n' "$output" \
+    | tr -d '\r' \
+    | sed -n 's/^package://p' \
+    | head -n1)"
+  [ -n "$pkg_path" ] || return 1
+  printf '%s\n' "$pkg_path"
+}
+
 copy_installed_base() {
   local pkg_path
-  pkg_path="$(rish -c "pm path $PACKAGE" 2>/dev/null | sed -n 's/^package://p' | head -n1)"
-  [ -n "$pkg_path" ] || fail "$PACKAGE is not currently installed"
+  pkg_path="$(resolve_installed_path || true)"
+  [ -n "$pkg_path" ] || fail "$PACKAGE is not currently visible to PackageManager after retries"
   rm -f "$INSTALLED_COPY"
   rish -c "cat '$pkg_path'" > "$INSTALLED_COPY" || fail "Could not read installed base APK"
   [ -s "$INSTALLED_COPY" ] || fail "Installed APK copy is empty"
