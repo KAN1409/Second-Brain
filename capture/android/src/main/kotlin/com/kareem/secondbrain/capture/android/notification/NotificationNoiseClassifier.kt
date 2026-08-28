@@ -11,6 +11,8 @@ data class NotificationNoiseFacts(
     val isOngoing: Boolean,
     val category: String?,
     val channelId: String?,
+    val meaningfulChange: NotificationMeaningfulChange? = null,
+    val signalType: RelaySignalType? = null,
 )
 
 /**
@@ -24,6 +26,19 @@ object NotificationNoiseClassifier {
     private val chargingMarkers = listOf("charging", "charge", "شحن", "الشحن")
 
     fun classify(facts: NotificationNoiseFacts): RelayFilterDecision {
+        if (facts.meaningfulChange == NotificationMeaningfulChange.EXACT_DUPLICATE) {
+            return RelayFilterDecision(
+                state = RelayFilterState.DROP_CONFIRMED_NOISE,
+                reason = "Exact duplicate snapshot for the same notification lifecycle",
+            )
+        }
+        if (facts.meaningfulChange == NotificationMeaningfulChange.MACHINE_CHURN_ONLY) {
+            return RelayFilterDecision(
+                state = RelayFilterState.DROP_CONFIRMED_NOISE,
+                reason = "Only deterministic progress/percentage fields changed",
+            )
+        }
+
         val text = listOfNotNull(
             facts.title,
             facts.body,
@@ -43,11 +58,6 @@ object NotificationNoiseClassifier {
             )
         }
 
-        // Android CATEGORY_TRANSPORT is the platform's semantic category for media playback
-        // controls. When it is also ongoing, the notification is a persistent control surface,
-        // not a discrete app event. Keep it in local capture for forensics, but do not forward
-        // repeated now-playing/control state into Cortex. Other notifications from the same app
-        // (recommendations, downloads, account/security notices, etc.) remain untouched.
         if (facts.isOngoing && facts.category.equals("transport", ignoreCase = true)) {
             return RelayFilterDecision(
                 state = RelayFilterState.DROP_CONFIRMED_NOISE,
@@ -59,6 +69,13 @@ object NotificationNoiseClassifier {
             return RelayFilterDecision(
                 state = RelayFilterState.LOW_VALUE,
                 reason = "Persistent SystemUI state; preserved because meaning is uncertain",
+            )
+        }
+
+        if (facts.signalType == RelaySignalType.SYSTEM_NOISE && facts.isOngoing) {
+            return RelayFilterDecision(
+                state = RelayFilterState.LOW_VALUE,
+                reason = "Persistent control/service signal; preserved because meaning is uncertain",
             )
         }
 
