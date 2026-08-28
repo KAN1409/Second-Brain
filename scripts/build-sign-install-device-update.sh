@@ -20,6 +20,7 @@ need rish
 need sed
 need grep
 need sha256sum
+need bash
 
 APKSIGNER="${APKSIGNER:-}"
 if [ -z "$APKSIGNER" ] && [ -n "${ANDROID_HOME:-}" ]; then
@@ -74,7 +75,7 @@ UNSIGNED_APK="$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
 echo
 echo "==> Sign 3/5: permanent Second Brain identity"
-"$ROOT_DIR/scripts/sign-secondbrain-device-apk.sh" "$UNSIGNED_APK" "$SIGNED_APK"
+bash "$ROOT_DIR/scripts/sign-secondbrain-device-apk.sh" "$UNSIGNED_APK" "$SIGNED_APK"
 SIGNED_CERT="$(cert_of_apk "$SIGNED_APK")"
 [ "$SIGNED_CERT" = "$EXPECTED_CERT_SHA256" ] || fail "Signed APK certificate verification failed"
 echo "Signed APK signer OK: $SIGNED_CERT"
