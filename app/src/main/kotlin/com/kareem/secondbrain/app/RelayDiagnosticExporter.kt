@@ -42,6 +42,9 @@ internal object RelayDiagnosticExporter {
         put("filtered", s.filtered)
         put("low_value_forwarded", s.lowValueForwarded)
         put("waiting_or_in_flight", s.waiting)
+        put("restored_pending_event_ids", JSONArray().apply {
+            s.restoredPendingEventIds.forEach { put("sb_$it") }
+        })
         put("failed_or_retry_events", s.failedRetries)
         put("delivery_issue_incidents", s.failedRetries)
         put("lifecycle", JSONObject().apply {
@@ -56,6 +59,7 @@ internal object RelayDiagnosticExporter {
             put("send_attempts", "Actual Messenger.send() ingest attempts. Retries can make this greater than captured.")
             put("delivered_cortex_ack", "Events accepted only after a correlated Cortex ACK for the same event_id.")
             put("delivery_issue_incidents", "Retry/failure incidents, not unique events; one event can increment this more than once.")
+            put("restored_pending_event_ids", "Exact V1 event ids recovered from the durable outbox when this Relay process started.")
             put("lifecycle_updated", "Android updates observed for an existing notification identity, including updates later suppressed as exact duplicates/churn.")
         })
         put("last_package", s.lastPackage ?: JSONObject.NULL)
