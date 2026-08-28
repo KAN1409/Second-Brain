@@ -82,6 +82,41 @@ class NotificationSignalAnalysisTest {
     }
 
     @Test
+    fun ordinaryContentUpdateKeepsLogicalSignalIdentityAndUsesUpdateSequence() {
+        val dir = Files.createTempDirectory("relay-stable-logical-id").toFile()
+        try {
+            val store = DurableNotificationLifecycleStore(dir)
+            val firstFacts = facts(body = "Order is preparing", messages = emptyList())
+            val identity = NotificationSignalAnalyzer.notificationIdentity(firstFacts)
+            val firstLifecycle = store.observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(firstFacts),
+                NotificationSignalAnalyzer.stableChurnFingerprint(firstFacts),
+                emptyList(),
+                nowEpochMs = 1000,
+            )
+            val first = NotificationSignalAnalyzer.analyze(firstFacts, firstLifecycle)
+
+            val updatedFacts = facts(body = "Order is on the way", messages = emptyList())
+            val updatedLifecycle = store.observePosted(
+                identity,
+                NotificationSignalAnalyzer.visibleFingerprint(updatedFacts),
+                NotificationSignalAnalyzer.stableChurnFingerprint(updatedFacts),
+                emptyList(),
+                nowEpochMs = 2000,
+            )
+            val updated = NotificationSignalAnalyzer.analyze(updatedFacts, updatedLifecycle)
+
+            assertEquals(NotificationMeaningfulChange.CONTENT_CHANGED, updated.change)
+            assertEquals(first.notificationInstanceIdentity, updated.notificationInstanceIdentity)
+            assertEquals(first.logicalSignalId, updated.logicalSignalId)
+            assertEquals(1, updatedLifecycle.sequence)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun newMessageClassificationDoesNotReuseOtpFromOlderMessageInSnapshot() {
         val dir = Files.createTempDirectory("relay-delta-entities").toFile()
         try {
@@ -174,6 +209,7 @@ class NotificationSignalAnalysisTest {
             assertTrue(repost.isNewInstance)
             assertEquals(2, repost.generation)
             assertNotEquals(firstAnalysis.notificationInstanceIdentity, repostAnalysis.notificationInstanceIdentity)
+            assertNotEquals(firstAnalysis.logicalSignalId, repostAnalysis.logicalSignalId)
         } finally {
             dir.deleteRecursively()
         }
