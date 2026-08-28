@@ -503,12 +503,44 @@ object CortexConnectorClient {
     }
 
     private fun compactMetadata(source: JSONObject): JSONObject = JSONObject().apply {
-        listOf("id", "tag", "groupKey", "isGroup", "isOngoing", "category", "channelId").forEach { key ->
+        listOf(
+            "id",
+            "tag",
+            "uid",
+            "androidUserId",
+            "groupKey",
+            "isGroup",
+            "isOngoing",
+            "category",
+            "channelId",
+            "shortcutId",
+            "replyable",
+        ).forEach { key ->
             if (source.has(key)) {
                 if (source.isNull(key)) put(key, JSONObject.NULL) else put(key, source.opt(key))
             }
         }
+
+        source.optJSONObject("relay_normalization")?.let { normalization ->
+            put("relay_normalization", JSONObject(normalization.toString()))
+        }
+        source.optJSONArray("relay_entities")?.let { entities ->
+            put("relay_entities", JSONArray().apply {
+                for (index in 0 until minOf(entities.length(), 64)) {
+                    val entity = entities.optJSONObject(index) ?: continue
+                    put(JSONObject().apply {
+                        listOf("type", "value", "source_field", "start", "end_exclusive", "confidence").forEach { key ->
+                            if (entity.has(key)) {
+                                val value = entity.opt(key)
+                                if (value is String) put(key, value.take(2_048)) else put(key, value)
+                            }
+                        }
+                    })
+                }
+            })
+        }
         put("payload_truncated", true)
+        put("relay_entities_truncated", (source.optJSONArray("relay_entities")?.length() ?: 0) > 64)
     }
 
     private fun sizeBytes(value: JSONObject): Int = value.toString().toByteArray(StandardCharsets.UTF_8).size
