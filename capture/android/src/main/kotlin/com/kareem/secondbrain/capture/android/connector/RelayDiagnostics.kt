@@ -39,6 +39,10 @@ data class RelayRecentSignal(
     val deliveryDetail: String = "Stored locally",
     val cortexStatus: String? = null,
     val cortexSignalId: Long = 0,
+    /** Actual Messenger.send() ingest attempts for this event in the current process. */
+    val sendAttempts: Int = 0,
+    /** Retry/failure incidents attributable to this event in the current process. */
+    val deliveryIssueIncidents: Int = 0,
 )
 
 data class RelayDiagnosticSnapshot(
@@ -167,6 +171,7 @@ object RelayRuntimeDiagnostics {
                 signal.copy(
                     deliveryState = RelayDeliveryState.SENT,
                     deliveryDetail = "Sent to Cortex; waiting for correlated ACK",
+                    sendAttempts = signal.sendAttempts + 1,
                     updatedAt = now,
                 )
             },
@@ -226,6 +231,7 @@ object RelayRuntimeDiagnostics {
                 signal.copy(
                     deliveryState = RelayDeliveryState.RETRYING,
                     deliveryDetail = reason,
+                    deliveryIssueIncidents = signal.deliveryIssueIncidents + 1,
                     updatedAt = now,
                 )
             },
@@ -242,6 +248,7 @@ object RelayRuntimeDiagnostics {
                 signal.copy(
                     deliveryState = RelayDeliveryState.FAILED,
                     deliveryDetail = reason,
+                    deliveryIssueIncidents = signal.deliveryIssueIncidents + 1,
                     updatedAt = now,
                 )
             },
