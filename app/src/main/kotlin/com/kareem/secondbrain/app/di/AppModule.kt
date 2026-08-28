@@ -3,11 +3,14 @@ package com.kareem.secondbrain.app.di
 import android.content.Context
 import androidx.room3.Room
 import androidx.sqlite.driver.AndroidSQLiteDriver
+import com.kareem.secondbrain.ai.api.AiProvider
 import com.kareem.secondbrain.ai.api.Embedder
 import com.kareem.secondbrain.ai.api.OcrEngine
 import com.kareem.secondbrain.ai.api.Transcriber
 import com.kareem.secondbrain.ai.embedding.EmbeddingGemmaEmbedder
 import com.kareem.secondbrain.ai.embedding.EmbeddingModelInstaller
+import com.kareem.secondbrain.ai.gemini.GeminiAiProvider
+import com.kareem.secondbrain.ai.gemini.GeminiApiKeyStore
 import com.kareem.secondbrain.ai.ocr.HybridOcrEngine
 import com.kareem.secondbrain.ai.ocr.MlKitOcrEngine
 import com.kareem.secondbrain.ai.ocr.TesseractArabicOcrEngine
@@ -25,6 +28,7 @@ import com.kareem.secondbrain.core.database.MemoryDao
 import com.kareem.secondbrain.core.database.SearchDao
 import com.kareem.secondbrain.core.search.AppSearchSemanticAccelerationIndex
 import com.kareem.secondbrain.core.search.SemanticAccelerationIndex
+import com.kareem.secondbrain.data.repository.GroundedAskRepository
 import com.kareem.secondbrain.data.repository.RoomAppSessionRepository
 import com.kareem.secondbrain.data.repository.RoomAssetRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureHealthRepository
@@ -33,6 +37,7 @@ import com.kareem.secondbrain.data.repository.RoomCaptureRepository
 import com.kareem.secondbrain.data.repository.RoomMemoryRepository
 import com.kareem.secondbrain.data.repository.RoomMemorySearchRepository
 import com.kareem.secondbrain.domain.AppSessionRepository
+import com.kareem.secondbrain.domain.AskRepository
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureHealthRepository
 import com.kareem.secondbrain.domain.CapturePolicyRepository
@@ -119,6 +124,24 @@ object AppModule {
         embedder: Embedder,
         semanticAccelerationIndex: SemanticAccelerationIndex,
     ): MemorySearchRepository = RoomMemorySearchRepository(searchDao, embedder, semanticAccelerationIndex)
+
+    @Provides
+    @Singleton
+    fun provideGeminiApiKeyStore(@ApplicationContext context: Context): GeminiApiKeyStore =
+        GeminiApiKeyStore(context)
+
+    @Provides
+    @Singleton
+    fun provideAiProvider(keyStore: GeminiApiKeyStore): AiProvider = GeminiAiProvider(keyStore)
+
+    @Provides
+    @Singleton
+    fun provideAskRepository(
+        searchRepository: MemorySearchRepository,
+        memoryRepository: MemoryRepository,
+        policyRepository: CapturePolicyRepository,
+        aiProvider: AiProvider,
+    ): AskRepository = GroundedAskRepository(searchRepository, memoryRepository, policyRepository, aiProvider)
 
     @Provides
     @Singleton

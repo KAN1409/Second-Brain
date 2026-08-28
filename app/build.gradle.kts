@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.secondbrain"
         minSdk = 30
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.4.0-m3-dev"
+        versionCode = 5
+        versionName = "0.5.0-m4-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -39,6 +39,7 @@ dependencies {
     implementation(project(":ai:whisper"))
     implementation(project(":ai:ocr"))
     implementation(project(":ai:embedding"))
+    implementation(project(":ai:gemini"))
     implementation(libs.androidx.sqlite.framework)
     implementation(project(":feature:timeline"))
     implementation(project(":feature:search"))

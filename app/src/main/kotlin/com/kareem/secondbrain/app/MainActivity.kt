@@ -35,6 +35,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kareem.secondbrain.ai.embedding.EmbeddingModelInstaller
 import com.kareem.secondbrain.ai.embedding.EmbeddingModelStatus
+import com.kareem.secondbrain.ai.gemini.GeminiApiKeyStore
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
 import com.kareem.secondbrain.capture.android.health.InstalledAppCatalog
 import com.kareem.secondbrain.capture.android.health.InstalledAppEntry
@@ -45,6 +46,7 @@ import com.kareem.secondbrain.core.model.CaptureState
 import com.kareem.secondbrain.core.model.SearchRequest
 import com.kareem.secondbrain.core.model.TimelineRequest
 import com.kareem.secondbrain.core.privacy.DefaultCapturePolicy
+import com.kareem.secondbrain.domain.AskRepository
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CapturePolicyRepository
@@ -72,12 +74,14 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var captureRepository: CaptureRepository
     @Inject lateinit var memoryRepository: MemoryRepository
     @Inject lateinit var memorySearchRepository: MemorySearchRepository
+    @Inject lateinit var askRepository: AskRepository
     @Inject lateinit var policyRepository: CapturePolicyRepository
     @Inject lateinit var accessChecker: CaptureAccessChecker
     @Inject lateinit var installedAppCatalog: InstalledAppCatalog
     @Inject lateinit var assetRepository: AssetRepository
     @Inject lateinit var enrichmentScheduler: EnrichmentScheduler
     @Inject lateinit var embeddingModelInstaller: EmbeddingModelInstaller
+    @Inject lateinit var geminiApiKeyStore: GeminiApiKeyStore
 
     private val accessSnapshotState = mutableStateOf(CaptureAccessSnapshot(false, false, false, false))
 
@@ -89,11 +93,13 @@ class MainActivity : ComponentActivity() {
                 captureRepository = captureRepository,
                 memoryRepository = memoryRepository,
                 memorySearchRepository = memorySearchRepository,
+                askRepository = askRepository,
                 policyRepository = policyRepository,
                 installedAppCatalog = installedAppCatalog,
                 assetRepository = assetRepository,
                 enrichmentScheduler = enrichmentScheduler,
                 embeddingModelInstaller = embeddingModelInstaller,
+                geminiApiKeyStore = geminiApiKeyStore,
                 access = accessSnapshotState.value,
                 openNotificationAccess = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                 openAccessibilityAccess = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
@@ -122,11 +128,13 @@ private fun SecondBrainRoot(
     captureRepository: CaptureRepository,
     memoryRepository: MemoryRepository,
     memorySearchRepository: MemorySearchRepository,
+    askRepository: AskRepository,
     policyRepository: CapturePolicyRepository,
     installedAppCatalog: InstalledAppCatalog,
     assetRepository: AssetRepository,
     enrichmentScheduler: EnrichmentScheduler,
     embeddingModelInstaller: EmbeddingModelInstaller,
+    geminiApiKeyStore: GeminiApiKeyStore,
     access: CaptureAccessSnapshot,
     openNotificationAccess: () -> Unit,
     openAccessibilityAccess: () -> Unit,
@@ -144,10 +152,15 @@ private fun SecondBrainRoot(
     }
     var embeddingModelStatus by remember { mutableStateOf(EmbeddingModelStatus(false)) }
     var embeddingModelMessage by remember { mutableStateOf<String?>(null) }
+    var geminiKeyConfigured by remember { mutableStateOf(false) }
+    var geminiKeyMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(embeddingModelInstaller) {
         runCatching { embeddingModelInstaller.status() }
             .onSuccess { embeddingModelStatus = it }
             .onFailure { embeddingModelMessage = it.message ?: "Unable to read embedding model status" }
+    }
+    LaunchedEffect(geminiApiKeyStore) {
+        geminiKeyConfigured = runCatching { geminiApiKeyStore.hasKey() }.getOrDefault(false)
     }
 
     val context = LocalContext.current
@@ -240,7 +253,9 @@ private fun SecondBrainRoot(
                     onSearch = { query -> memorySearchRepository.search(SearchRequest(query = query)) },
                 )
             }
-            composable("ask") { AskScreen() }
+            composable("ask") {
+                AskScreen(onAsk = { question -> askRepository.ask(question) })
+            }
             composable("settings") {
                 SettingsScreen(
                     captureState = captureState,
@@ -248,6 +263,8 @@ private fun SecondBrainRoot(
                     embeddingModelInstalled = embeddingModelStatus.installed,
                     embeddingModelSizeBytes = embeddingModelStatus.sizeBytes,
                     embeddingModelMessage = embeddingModelMessage,
+                    geminiKeyConfigured = geminiKeyConfigured,
+                    geminiKeyMessage = geminiKeyMessage,
                     onToggleCapture = toggleCapture,
                     onNotificationAccess = openNotificationAccess,
                     onAccessibilityAccess = openAccessibilityAccess,
@@ -255,6 +272,27 @@ private fun SecondBrainRoot(
                     onMicrophoneAccess = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                     onAppPolicies = { navController.navigate("appPolicies") },
                     onInstallEmbeddingModel = { embeddingModelLauncher.launch("*/*") },
+                    onSaveGeminiApiKey = { apiKey ->
+                        scope.launch {
+                            geminiKeyMessage = "Saving key…"
+                            runCatching { geminiApiKeyStore.save(apiKey) }
+                                .onSuccess {
+                                    geminiKeyConfigured = true
+                                    geminiKeyMessage = "Gemini key saved securely."
+                                }
+                                .onFailure { error -> geminiKeyMessage = error.message ?: "Unable to save Gemini key" }
+                        }
+                    },
+                    onClearGeminiApiKey = {
+                        scope.launch {
+                            runCatching { geminiApiKeyStore.clear() }
+                                .onSuccess {
+                                    geminiKeyConfigured = false
+                                    geminiKeyMessage = "Gemini key removed."
+                                }
+                                .onFailure { error -> geminiKeyMessage = error.message ?: "Unable to remove Gemini key" }
+                        }
+                    },
                 )
             }
             composable("capture") {

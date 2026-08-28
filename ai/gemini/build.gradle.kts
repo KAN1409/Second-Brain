@@ -18,4 +18,5 @@ android {
 
 dependencies {
     implementation(project(":ai:api"))
+    implementation(libs.kotlinx.coroutines.core)
 }

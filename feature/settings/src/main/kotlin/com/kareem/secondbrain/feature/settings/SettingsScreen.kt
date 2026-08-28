@@ -10,10 +10,16 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureMode
@@ -29,6 +35,8 @@ fun SettingsScreen(
     embeddingModelInstalled: Boolean,
     embeddingModelSizeBytes: Long,
     embeddingModelMessage: String?,
+    geminiKeyConfigured: Boolean,
+    geminiKeyMessage: String?,
     onToggleCapture: () -> Unit,
     onNotificationAccess: () -> Unit,
     onAccessibilityAccess: () -> Unit,
@@ -36,8 +44,11 @@ fun SettingsScreen(
     onMicrophoneAccess: () -> Unit,
     onAppPolicies: () -> Unit,
     onInstallEmbeddingModel: () -> Unit,
+    onSaveGeminiApiKey: (String) -> Unit,
+    onClearGeminiApiKey: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var apiKey by remember { mutableStateOf("") }
     Column(
         modifier = modifier.fillMaxSize().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -78,6 +89,35 @@ fun SettingsScreen(
         if (!embeddingModelInstalled) {
             Button(onClick = onInstallEmbeddingModel) { Text("Install EmbeddingGemma model") }
         }
+
+        HorizontalDivider()
+        Text("Ask My Brain • Gemini BYOK", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (geminiKeyConfigured) "Gemini key configured. Cloud synthesis can use only memories whose app policy allows AI upload."
+            else "No Gemini key configured. Ask remains evidence-only and does not upload app memories.",
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Gemini API key") },
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = apiKey.isNotBlank(),
+                onClick = {
+                    onSaveGeminiApiKey(apiKey)
+                    apiKey = ""
+                },
+            ) { Text("Save key") }
+            if (geminiKeyConfigured) {
+                OutlinedButton(onClick = onClearGeminiApiKey) { Text("Remove key") }
+            }
+        }
+        geminiKeyMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Text("The key is encrypted at rest with Android Keystore and is never committed to the project.", style = MaterialTheme.typography.bodySmall)
     }
 }
 
