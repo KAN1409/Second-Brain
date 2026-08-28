@@ -5,6 +5,17 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val signingStoreFile = providers.environmentVariable("SB_SIGNING_STORE_FILE").orNull
+val signingStorePassword = providers.environmentVariable("SB_SIGNING_STORE_PASSWORD").orNull
+val signingKeyAlias = providers.environmentVariable("SB_SIGNING_KEY_ALIAS").orNull
+val signingKeyPassword = providers.environmentVariable("SB_SIGNING_KEY_PASSWORD").orNull
+val permanentSigningAvailable = listOf(
+    signingStoreFile,
+    signingStorePassword,
+    signingKeyAlias,
+    signingKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.kareem.secondbrain"
     compileSdk = 37
@@ -16,6 +27,33 @@ android {
         versionCode = 5
         versionName = "0.5.0-m4-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (permanentSigningAvailable) {
+            create("permanent") {
+                storeFile = file(signingStoreFile!!)
+                storePassword = signingStorePassword
+                keyAlias = signingKeyAlias
+                keyPassword = signingKeyPassword
+                storeType = "PKCS12"
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            // CI-distributed milestone APKs use the permanent key. Local builds
+            // without the four signing environment variables keep the normal
+            // developer debug key and must not be distributed as updates.
+            if (permanentSigningAvailable) {
+                signingConfig = signingConfigs.getByName("permanent")
+            }
+        }
     }
 
     compileOptions {
