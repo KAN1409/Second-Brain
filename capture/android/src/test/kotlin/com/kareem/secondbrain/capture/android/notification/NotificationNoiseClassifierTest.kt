@@ -6,6 +6,44 @@ import org.junit.Test
 
 class NotificationNoiseClassifierTest {
     @Test
+    fun androidGroupSummaryIsKeptLocalButNotForwarded() {
+        val decision = NotificationNoiseClassifier.classify(
+            NotificationNoiseFacts(
+                packageName = "com.whatsapp",
+                title = "Kareem Abdel Nasser",
+                body = "2 new messages",
+                expandedText = "Kareem Abdel Nasser: Hi",
+                isOngoing = false,
+                category = "msg",
+                channelId = "messages",
+                isGroupSummary = true,
+                signalType = RelaySignalType.OTHER,
+            ),
+        )
+
+        assertEquals(RelayFilterState.DROP_CONFIRMED_NOISE, decision.state)
+    }
+
+    @Test
+    fun groupedChildMessageIsStillForwarded() {
+        val decision = NotificationNoiseClassifier.classify(
+            NotificationNoiseFacts(
+                packageName = "com.whatsapp",
+                title = "Kareem Abdel Nasser",
+                body = "Hi",
+                expandedText = null,
+                isOngoing = false,
+                category = "msg",
+                channelId = "messages",
+                isGroupSummary = false,
+                signalType = RelaySignalType.HUMAN_MESSAGE,
+            ),
+        )
+
+        assertEquals(RelayFilterState.FORWARD, decision.state)
+    }
+
+    @Test
     fun ongoingSystemUiChargingPercentageIsConfirmedNoise() {
         val decision = NotificationNoiseClassifier.classify(
             NotificationNoiseFacts(
