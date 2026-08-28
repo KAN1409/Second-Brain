@@ -22,24 +22,36 @@ Status legend:
 - ✅ **Diagnostic accounting is explicit** — captured events, send attempts, ACKed deliveries, retry/failure incidents, lifecycle counters and per-signal delivery accounting are exported.
 - ✅ **Update-in-place / permanent signer path works** — package remains `com.kareem.secondbrain`; permanent signer is preserved; installation uses `pm install -r`.
 
-## Candidate 1 real-device result — FAILED acceptance, useful evidence retained
+## Candidate history
+
+### Candidate 1 — FAILED acceptance, useful evidence retained
 
 Candidate 1 (`versionCode 10`, `1.0.0-relay-v1-candidate`) proved several important paths on the real device:
 
 - ✅ Relay → Cortex exact ACK path worked: diagnostic showed 6 captured, 6 send attempts, 6 correlated Cortex ACK deliveries, 0 rejection, 0 waiting and 0 retry incidents.
 - ✅ Lifecycle observation worked on real notifications: POSTED / UPDATED / REMOVED counters moved and exact duplicate updates were suppressed.
 - ✅ Stable notification/logical identities were visible across POSTED/UPDATED events.
-- ❌ WhatsApp exposed a real duplicate-evidence case: Android posted both the useful child message notification and a group-summary/container notification at nearly the same time. Candidate 1 forwarded both, producing `HUMAN_MESSAGE` plus `OTHER` events for essentially the same underlying message.
-- ❌ Candidate 1 diagnostic did not export normalized `source_profile_identity` / `conversation_identity`, so the two-WhatsApp-account acceptance condition could not be proven from the shared report alone.
-- ⏳ Durable outbox process-death/reboot recovery was not tested yet because duplicate evidence must be fixed first.
+- ❌ WhatsApp exposed a real duplicate-evidence case: Android posted both the useful child message notification and a group-summary/container notification at nearly the same time. Candidate 1 forwarded both.
+- ❌ Candidate 1 diagnostic did not export normalized source/profile and conversation identities.
 
-Candidate 2 exists only because candidate 1 failed a real acceptance condition. Its remediation is general Android behavior, not a WhatsApp-specific text rule:
+### Candidate 2 — duplicate/account proof PASSED; message classification defect found
 
-- Detect `Notification.FLAG_GROUP_SUMMARY`.
-- Keep the summary locally for forensic evidence.
-- Suppress only its Cortex delivery because Android child notifications carry the underlying evidence.
-- Continue forwarding grouped child notifications normally.
-- Export source-profile, notification-instance and conversation identities in diagnostics for account-scope validation.
+Candidate 2 (`versionCode 11`, `1.0.0-relay-v1-candidate2`) was installed and tested on the real device.
+
+- ✅ Diagnostic showed 4 captured events split deterministically into 2 Cortex deliveries + 2 local filtered Android group summaries.
+- ✅ Both delivered child notifications received correlated Cortex ACKs.
+- ✅ Group-summary containers had `DROP_CONFIRMED_NOISE`, zero send attempts and zero Cortex signal IDs.
+- ✅ Zero rejection, zero waiting/in-flight and zero retry/delivery incidents.
+- ✅ Two WhatsApp account/profile surfaces were distinguishable from Android evidence: the two message pairs had different `source_profile_identity` values and different conversation identities, each based on Android `shortcutId`.
+- ❌ The useful forwarded child notification was classified `OTHER` while the filtered group summary was classified `HUMAN_MESSAGE`. That would send a less useful signal type to Cortex even though the underlying content was delivered.
+
+Candidate 3 exists only because that real-device classification defect was found. It generalizes Android conversation detection rather than adding a WhatsApp-specific rule:
+
+- Structured MessagingStyle evidence remains `HUMAN_MESSAGE`.
+- `category=msg` remains `HUMAN_MESSAGE` (or SMS for SMS packages).
+- A replyable Android conversation surface with shortcut / Person / conversation-title evidence is also `HUMAN_MESSAGE` even if the app omits `category=msg`.
+- A non-replyable generic shortcut surface remains `OTHER`.
+- Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) final CI passed unit tests, debug assemble, unsigned release assemble and artifact uploads.
 
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
@@ -55,18 +67,19 @@ Candidate 2 exists only because candidate 1 failed a real acceptance condition. 
   - Updates retain generation and sequence instead of becoming unrelated snapshots by default.
   - A removal closes the current notification instance; a later repost starts a new generation.
 
-- ❌ **3. Meaningful delta / duplicate evidence — candidate 2 remediation awaiting CI + device revalidation**
-  - Exact repeated snapshots are suppressed as duplicates.
-  - MessagingStyle updates identify genuinely new structured messages and send only their evidence delta.
-  - Deterministic percentage/progress-only machine churn is retained locally for forensics but suppressed from Cortex delivery.
-  - Android `FLAG_GROUP_SUMMARY` containers are now retained locally but suppressed from Cortex delivery; grouped child notifications remain forwardable.
-  - This stays RED until a real WhatsApp message produces one useful Cortex-delivered child signal while its summary/container is filtered locally.
+- ❌ **3. Meaningful delta / duplicate evidence — duplicate half passed; candidate 3 classification revalidation pending**
+  - ✅ Exact repeated snapshots are suppressed as duplicates.
+  - ✅ Android `FLAG_GROUP_SUMMARY` containers are retained locally but suppressed from Cortex delivery while grouped child notifications remain forwardable.
+  - ✅ Candidate 2 real-device test produced exactly one Cortex-delivered child per tested WhatsApp message while the matching summary stayed local.
+  - ✅ MessagingStyle updates identify genuinely new structured messages and send only their evidence delta in implementation tests.
+  - ✅ Deterministic percentage/progress-only machine churn is retained locally for forensics but suppressed from Cortex delivery.
+  - ❌ Candidate 3 must confirm the delivered child itself is classified `HUMAN_MESSAGE` rather than `OTHER`.
 
-- ✅ **4. Multi-account / conversation identity foundation — implementation ready; real-device proof pending gate 8**
+- ✅ **4. Multi-account / conversation identity — real-device proof PASSED**
   - Source identity includes package + Android user/profile + UID rather than package name alone.
   - Notification/conversation identity uses notification key, shortcut/conversation metadata and Person/participant evidence when available.
-  - Tests verify distinct Android profile/UID scope does not collapse into one source identity.
-  - Candidate 2 diagnostics export `source_profile_identity`, `notification_instance_identity`, `conversation_identity` and `conversation_identity_basis` so the user's two-WhatsApp-account scenario can be measured directly.
+  - Candidate 2 real-device diagnostic showed different `source_profile_identity` and conversation identities for the two WhatsApp account/profile surfaces.
+  - Both conversation identities were grounded in Android `shortcutId`; Relay did not invent an account label.
 
 - ✅ **5. Rich evidence normalization + provenance**
   - Full MessagingStyle structures, sender/conversation/timestamps, replyability, Person and Android metadata are captured.
@@ -87,16 +100,16 @@ Candidate 2 exists only because candidate 1 failed a real acceptance condition. 
   - Confirmed Android container/control surfaces and deterministic machine churn can be suppressed while uncertain evidence is preserved.
   - Personal priority/relevance remains Cortex's responsibility.
 
-## DEVICE ACCEPTANCE GATE — candidate 2 must pass as one combined test
+## DEVICE ACCEPTANCE GATE — candidate 3 is current
 
 - ❌ **8. One combined real-device acceptance test**
-  - Cortex available: real WhatsApp message → captured → exactly one useful child delivery → exact ACK / Cortex signal id; Android group summary remains local/filtered.
+  - Candidate 3 immediate recheck: a real WhatsApp message must produce one useful `HUMAN_MESSAGE` child delivery + correlated ACK while its Android group summary remains local/filtered.
   - Cortex unavailable: real message → captured → persists in durable outbox.
   - Kill/restart Relay (and reboot if practical) while Cortex unavailable → pending signal remains and the same restored event id is reported.
   - Restore Cortex → same pending signal delivers once logically and receives correlated ACK.
   - Updated notification does not create unrelated duplicate evidence.
   - New MessagingStyle message inside an updated notification is preserved as new evidence.
-  - Two WhatsApp accounts remain distinguishable where Android evidence permits; compare exported `source_profile_identity` and conversation identity evidence. If Android exposes no account discriminator, Relay must say the evidence is insufficient rather than invent an account identity.
+  - ✅ Two WhatsApp account/profile surfaces are already proven distinguishable where Android evidence permits.
   - Confirmed media/progress/container noise remains local and does not consume Cortex delivery.
   - Diagnostic report shows zero unexplained backlog/rejections and explains any retries per signal.
 
