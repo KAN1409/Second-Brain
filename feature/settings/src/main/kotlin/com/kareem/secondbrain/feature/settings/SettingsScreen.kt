@@ -26,12 +26,16 @@ import java.time.format.DateTimeFormatter
 fun SettingsScreen(
     captureState: CaptureState,
     access: CaptureAccessSnapshot,
+    embeddingModelInstalled: Boolean,
+    embeddingModelSizeBytes: Long,
+    embeddingModelMessage: String?,
     onToggleCapture: () -> Unit,
     onNotificationAccess: () -> Unit,
     onAccessibilityAccess: () -> Unit,
     onUsageAccess: () -> Unit,
     onMicrophoneAccess: () -> Unit,
     onAppPolicies: () -> Unit,
+    onInstallEmbeddingModel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -60,6 +64,20 @@ fun SettingsScreen(
         Text("Last app activity: ${formatInstant(captureState.lastAppActivityAt)}")
         Text("Sensitive credential/authenticator-style packages default to screen/OCR blocked and cloud AI is off by default.")
         OutlinedButton(onClick = onAppPolicies) { Text("App policies") }
+
+        HorizontalDivider()
+        Text("Semantic search", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (embeddingModelInstalled) {
+                "EmbeddingGemma installed (${formatBytes(embeddingModelSizeBytes)}). Hybrid semantic search is enabled and warms gradually."
+            } else {
+                "Embedding model not installed. Search remains fully usable with local lexical ranking."
+            },
+        )
+        embeddingModelMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        if (!embeddingModelInstalled) {
+            Button(onClick = onInstallEmbeddingModel) { Text("Install EmbeddingGemma model") }
+        }
     }
 }
 
@@ -79,4 +97,12 @@ private fun HealthRow(label: String, enabled: Boolean, onOpen: () -> Unit) {
 }
 
 private fun formatInstant(value: Instant?): String = value?.let(TIME_FORMAT::format) ?: "—"
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L * 1024L -> "%.2f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
+    bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+    else -> "$bytes B"
+}
+
 private val TIME_FORMAT = DateTimeFormatter.ofPattern("MMM d, HH:mm:ss").withZone(ZoneId.systemDefault())

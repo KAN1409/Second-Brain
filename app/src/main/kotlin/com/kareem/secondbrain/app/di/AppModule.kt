@@ -7,6 +7,7 @@ import com.kareem.secondbrain.ai.api.Embedder
 import com.kareem.secondbrain.ai.api.OcrEngine
 import com.kareem.secondbrain.ai.api.Transcriber
 import com.kareem.secondbrain.ai.embedding.EmbeddingGemmaEmbedder
+import com.kareem.secondbrain.ai.embedding.EmbeddingModelInstaller
 import com.kareem.secondbrain.ai.ocr.HybridOcrEngine
 import com.kareem.secondbrain.ai.ocr.MlKitOcrEngine
 import com.kareem.secondbrain.ai.ocr.TesseractArabicOcrEngine
@@ -98,6 +99,11 @@ object AppModule {
     @Singleton
     fun provideEmbedder(@ApplicationContext context: Context): Embedder =
         EmbeddingGemmaEmbedder(context)
+
+    @Provides
+    @Singleton
+    fun provideEmbeddingModelInstaller(@ApplicationContext context: Context): EmbeddingModelInstaller =
+        EmbeddingModelInstaller(context)
 
     @Provides
     @Singleton

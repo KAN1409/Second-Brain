@@ -17,11 +17,14 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -30,6 +33,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.kareem.secondbrain.ai.embedding.EmbeddingModelInstaller
+import com.kareem.secondbrain.ai.embedding.EmbeddingModelStatus
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
 import com.kareem.secondbrain.capture.android.health.InstalledAppCatalog
 import com.kareem.secondbrain.capture.android.health.InstalledAppEntry
@@ -72,6 +77,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var installedAppCatalog: InstalledAppCatalog
     @Inject lateinit var assetRepository: AssetRepository
     @Inject lateinit var enrichmentScheduler: EnrichmentScheduler
+    @Inject lateinit var embeddingModelInstaller: EmbeddingModelInstaller
 
     private val accessSnapshotState = mutableStateOf(CaptureAccessSnapshot(false, false, false, false))
 
@@ -87,6 +93,7 @@ class MainActivity : ComponentActivity() {
                 installedAppCatalog = installedAppCatalog,
                 assetRepository = assetRepository,
                 enrichmentScheduler = enrichmentScheduler,
+                embeddingModelInstaller = embeddingModelInstaller,
                 access = accessSnapshotState.value,
                 openNotificationAccess = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                 openAccessibilityAccess = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
@@ -119,6 +126,7 @@ private fun SecondBrainRoot(
     installedAppCatalog: InstalledAppCatalog,
     assetRepository: AssetRepository,
     enrichmentScheduler: EnrichmentScheduler,
+    embeddingModelInstaller: EmbeddingModelInstaller,
     access: CaptureAccessSnapshot,
     openNotificationAccess: () -> Unit,
     openAccessibilityAccess: () -> Unit,
@@ -134,6 +142,14 @@ private fun SecondBrainRoot(
     val installedApps by produceState(initialValue = emptyList<InstalledAppEntry>(), installedAppCatalog) {
         value = withContext(Dispatchers.Default) { installedAppCatalog.launchableApps() }
     }
+    var embeddingModelStatus by remember { mutableStateOf(EmbeddingModelStatus(false)) }
+    var embeddingModelMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(embeddingModelInstaller) {
+        runCatching { embeddingModelInstaller.status() }
+            .onSuccess { embeddingModelStatus = it }
+            .onFailure { embeddingModelMessage = it.message ?: "Unable to read embedding model status" }
+    }
+
     val context = LocalContext.current
     val microphoneLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     fun startVoiceService() {
@@ -156,6 +172,19 @@ private fun SecondBrainRoot(
         if (uri != null) scope.launch {
             val asset = assetRepository.importContentUri(uri.toString(), mimeType = context.contentResolver.getType(uri))
             captureRepository.ingest(CaptureCommand.File(Instant.now(), assetId = asset.id, displayName = uri.lastPathSegment))
+        }
+    }
+    val embeddingModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            embeddingModelMessage = "Installing model…"
+            runCatching { embeddingModelInstaller.install(uri.toString()) }
+                .onSuccess { status ->
+                    embeddingModelStatus = status
+                    embeddingModelMessage = "Model installed • SHA-256 ${status.sha256?.take(12) ?: "verified"}…"
+                }
+                .onFailure { error ->
+                    embeddingModelMessage = error.message ?: "Model installation failed"
+                }
         }
     }
     val toggleCapture = {
@@ -216,12 +245,16 @@ private fun SecondBrainRoot(
                 SettingsScreen(
                     captureState = captureState,
                     access = access,
+                    embeddingModelInstalled = embeddingModelStatus.installed,
+                    embeddingModelSizeBytes = embeddingModelStatus.sizeBytes,
+                    embeddingModelMessage = embeddingModelMessage,
                     onToggleCapture = toggleCapture,
                     onNotificationAccess = openNotificationAccess,
                     onAccessibilityAccess = openAccessibilityAccess,
                     onUsageAccess = openUsageAccess,
                     onMicrophoneAccess = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                     onAppPolicies = { navController.navigate("appPolicies") },
+                    onInstallEmbeddingModel = { embeddingModelLauncher.launch("*/*") },
                 )
             }
             composable("capture") {
