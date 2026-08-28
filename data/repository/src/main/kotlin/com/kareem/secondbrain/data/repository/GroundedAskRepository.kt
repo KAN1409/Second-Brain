@@ -6,7 +6,6 @@ import com.kareem.secondbrain.ai.api.AiClaim as ProviderClaim
 import com.kareem.secondbrain.ai.api.AiProvider
 import com.kareem.secondbrain.ai.api.AiProviderUnavailableException
 import com.kareem.secondbrain.ai.api.Evidence
-import com.kareem.secondbrain.core.model.SearchRequest
 import com.kareem.secondbrain.domain.AskAnswer
 import com.kareem.secondbrain.domain.AskClaim
 import com.kareem.secondbrain.domain.AskEvidence
@@ -15,6 +14,7 @@ import com.kareem.secondbrain.domain.AskSynthesisMode
 import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.MemoryRepository
 import com.kareem.secondbrain.domain.MemorySearchRepository
+import java.time.Clock
 import kotlin.math.round
 
 class GroundedAskRepository(
@@ -23,6 +23,7 @@ class GroundedAskRepository(
     private val policyRepository: CapturePolicyRepository,
     private val aiProvider: AiProvider? = null,
     private val cloudAiEnabled: suspend () -> Boolean = { false },
+    private val clock: Clock = Clock.systemDefaultZone(),
 ) : AskRepository {
 
     override suspend fun ask(question: String): AskAnswer {
@@ -39,7 +40,8 @@ class GroundedAskRepository(
             )
         }
 
-        val hits = searchRepository.search(SearchRequest(query = normalizedQuestion, limit = SEARCH_LIMIT))
+        val searchRequest = AskQueryPlanner.plan(normalizedQuestion, clock).copy(limit = SEARCH_LIMIT)
+        val hits = searchRepository.search(searchRequest)
         val bestPerMemory = linkedMapOf<String, com.kareem.secondbrain.core.model.SearchHit>()
         for (hit in hits) {
             bestPerMemory.putIfAbsent(hit.memoryId, hit)
