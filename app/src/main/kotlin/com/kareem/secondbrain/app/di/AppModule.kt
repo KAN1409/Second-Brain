@@ -3,8 +3,11 @@ package com.kareem.secondbrain.app.di
 import android.content.Context
 import androidx.room3.Room
 import androidx.sqlite.driver.AndroidSQLiteDriver
+import com.kareem.secondbrain.ai.api.Embedder
 import com.kareem.secondbrain.ai.api.OcrEngine
 import com.kareem.secondbrain.ai.api.Transcriber
+import com.kareem.secondbrain.ai.embedding.EmbeddingGemmaEmbedder
+import com.kareem.secondbrain.ai.embedding.EmbeddingModelInstaller
 import com.kareem.secondbrain.ai.ocr.HybridOcrEngine
 import com.kareem.secondbrain.ai.ocr.MlKitOcrEngine
 import com.kareem.secondbrain.ai.ocr.TesseractArabicOcrEngine
@@ -19,12 +22,16 @@ import com.kareem.secondbrain.core.database.CaptureStateDao
 import com.kareem.secondbrain.core.database.CaptureWriteDao
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.core.database.MemoryDao
+import com.kareem.secondbrain.core.database.SearchDao
+import com.kareem.secondbrain.core.search.AppSearchSemanticAccelerationIndex
+import com.kareem.secondbrain.core.search.SemanticAccelerationIndex
 import com.kareem.secondbrain.data.repository.RoomAppSessionRepository
 import com.kareem.secondbrain.data.repository.RoomAssetRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureHealthRepository
 import com.kareem.secondbrain.data.repository.RoomCapturePolicyRepository
 import com.kareem.secondbrain.data.repository.RoomCaptureRepository
 import com.kareem.secondbrain.data.repository.RoomMemoryRepository
+import com.kareem.secondbrain.data.repository.RoomMemorySearchRepository
 import com.kareem.secondbrain.domain.AppSessionRepository
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureHealthRepository
@@ -32,6 +39,7 @@ import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.CaptureRepository
 import com.kareem.secondbrain.domain.EnrichmentScheduler
 import com.kareem.secondbrain.domain.MemoryRepository
+import com.kareem.secondbrain.domain.MemorySearchRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -57,6 +65,7 @@ object AppModule {
     @Provides fun provideMemoryDao(db: BrainDatabase): MemoryDao = db.memoryDao()
     @Provides fun provideAssetDao(db: BrainDatabase): AssetDao = db.assetDao()
     @Provides fun provideEnrichmentDao(db: BrainDatabase): EnrichmentDao = db.enrichmentDao()
+    @Provides fun provideSearchDao(db: BrainDatabase): SearchDao = db.searchDao()
 
     @Provides
     @Singleton
@@ -87,6 +96,29 @@ object AppModule {
     @Singleton
     fun provideMemoryRepository(memoryDao: MemoryDao): MemoryRepository =
         RoomMemoryRepository(memoryDao)
+
+    @Provides
+    @Singleton
+    fun provideEmbedder(@ApplicationContext context: Context): Embedder =
+        EmbeddingGemmaEmbedder(context)
+
+    @Provides
+    @Singleton
+    fun provideEmbeddingModelInstaller(@ApplicationContext context: Context): EmbeddingModelInstaller =
+        EmbeddingModelInstaller(context)
+
+    @Provides
+    @Singleton
+    fun provideSemanticAccelerationIndex(@ApplicationContext context: Context): SemanticAccelerationIndex =
+        AppSearchSemanticAccelerationIndex(context)
+
+    @Provides
+    @Singleton
+    fun provideMemorySearchRepository(
+        searchDao: SearchDao,
+        embedder: Embedder,
+        semanticAccelerationIndex: SemanticAccelerationIndex,
+    ): MemorySearchRepository = RoomMemorySearchRepository(searchDao, embedder, semanticAccelerationIndex)
 
     @Provides
     @Singleton

@@ -21,4 +21,6 @@ dependencies {
     implementation(libs.androidx.appsearch)
     implementation(libs.androidx.appsearch.local.storage)
     implementation(libs.androidx.appsearch.builtin.types)
+    implementation(libs.kotlinx.coroutines.core)
+    testImplementation(libs.junit)
 }

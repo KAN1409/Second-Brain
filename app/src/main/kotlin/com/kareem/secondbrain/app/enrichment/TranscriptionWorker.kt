@@ -9,6 +9,7 @@ import com.kareem.secondbrain.ai.api.Transcriber
 import com.kareem.secondbrain.core.common.TextFingerprint
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.domain.AssetRepository
+import com.kareem.secondbrain.domain.MemorySearchRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import org.json.JSONArray
@@ -21,6 +22,7 @@ class TranscriptionWorker @AssistedInject constructor(
     private val assets: AssetRepository,
     private val enrichment: EnrichmentDao,
     private val transcriber: Transcriber,
+    private val search: MemorySearchRepository,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val eventId = inputData.getString(WorkManagerEnrichmentScheduler.KEY_EVENT_ID) ?: return Result.failure()
@@ -47,6 +49,7 @@ class TranscriptionWorker @AssistedInject constructor(
                 .toString()
             enrichment.markReady(eventId, text, normalized, TextFingerprint.sha256(normalized), metadata)
             enrichment.updateMemoryBody(eventId, text, System.currentTimeMillis())
+            enrichment.getMemoryByEventId(eventId)?.id?.let { memoryId -> search.index(memoryId) }
             Result.success()
         } catch (t: Throwable) {
             enrichment.markFailed(eventId, failureMetadata(t))

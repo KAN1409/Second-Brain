@@ -17,6 +17,8 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:database"))
     implementation(project(":core:privacy"))
+    implementation(project(":core:search"))
     implementation(project(":domain"))
+    implementation(project(":ai:api"))
     implementation(libs.kotlinx.coroutines.core)
 }

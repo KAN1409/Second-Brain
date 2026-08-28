@@ -18,4 +18,7 @@ android {
 
 dependencies {
     implementation(project(":ai:api"))
+    implementation(libs.mediapipe.tasks.text)
+    implementation(libs.kotlinx.coroutines.core)
+    testImplementation(libs.junit)
 }

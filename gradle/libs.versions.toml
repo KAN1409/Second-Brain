@@ -20,6 +20,7 @@ espresso = "3.7.0"
 mlkitText = "16.0.1"
 whisperAndroid = "1.0.0"
 tesseractAndroid = "4.9.0"
+mediapipe = "0.10.35"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -45,6 +46,7 @@ kotlinx-coroutines-play-services = { module = "org.jetbrains.kotlinx:kotlinx-cor
 mlkit-text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "mlkitText" }
 whisper-android = { module = "dev.ffmpegkit-maintained:whisper-android", version.ref = "whisperAndroid" }
 tesseract-android = { module = "com.github.adaptech-cz.Tesseract4Android:tesseract4android", version.ref = "tesseractAndroid" }
+mediapipe-tasks-text = { module = "com.google.mediapipe:tasks-text", version.ref = "mediapipe" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-foundation = { module = "androidx.compose.foundation:foundation" }
