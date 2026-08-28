@@ -1,6 +1,5 @@
 package com.kareem.secondbrain.data.repository
 
-import com.kareem.secondbrain.core.common.NotificationDedupPolicy
 import com.kareem.secondbrain.core.common.ScreenDedupPolicy
 import com.kareem.secondbrain.core.common.ScreenFingerprint
 import com.kareem.secondbrain.core.common.TextFingerprint
@@ -9,8 +8,8 @@ import com.kareem.secondbrain.core.database.CaptureEventEntity
 import com.kareem.secondbrain.core.database.CapturePolicyDao
 import com.kareem.secondbrain.core.database.CaptureStateDao
 import com.kareem.secondbrain.core.database.CaptureWriteDao
-import com.kareem.secondbrain.core.database.MemoryAssetEntity
 import com.kareem.secondbrain.core.database.MemoryEntity
+import com.kareem.secondbrain.core.database.MemoryAssetEntity
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
 import com.kareem.secondbrain.core.model.MemoryKind
@@ -92,45 +91,9 @@ class RoomCaptureRepository(
             .joinToString("\n")
         val normalized = TextFingerprint.normalize(raw)
         if (normalized.isBlank()) return CaptureResult.Ignored(IgnoreReason.EMPTY_OR_TOO_SHORT)
-
         val hash = TextFingerprint.sha256(normalized)
-        val simHash = TextFingerprint.simHash64(normalized)
-        val previous = events.latestByExternalId(
-            SourceType.NOTIFICATION.name,
-            command.packageName,
-            command.notificationKey,
-        )
+        val previous = events.latestByExternalId(SourceType.NOTIFICATION.name, command.packageName, command.notificationKey)
         if (previous?.content_hash == hash) return CaptureResult.Ignored(IgnoreReason.EXACT_DUPLICATE)
-
-        if (
-            previous != null &&
-            NotificationDedupPolicy.shouldCoalesceEnrichment(
-                previousNormalized = previous.normalized_text.orEmpty(),
-                previousOccurredAtMs = previous.occurred_at,
-                currentNormalized = normalized,
-                currentOccurredAtMs = command.occurredAt.toEpochMilli(),
-            )
-        ) {
-            val now = clock.millis()
-            return try {
-                writer.updateNotificationCapture(
-                    eventId = previous.id,
-                    rawText = raw,
-                    normalizedText = normalized,
-                    contentHash = hash,
-                    simHash = simHash,
-                    metadataJson = command.metadataJson,
-                    title = command.conversationTitle ?: command.title,
-                    updatedAt = now,
-                )
-                state.markNotification(command.occurredAt.toEpochMilli())
-                // Return the stable event ID so the optional connector can forward the richer
-                // payload without creating another local memory.
-                CaptureResult.Stored(previous.id)
-            } catch (t: Throwable) {
-                CaptureResult.Failed(retryable = true, message = t.message ?: t::class.java.simpleName)
-            }
-        }
 
         return insert(
             source = SourceType.NOTIFICATION,
@@ -142,7 +105,7 @@ class RoomCaptureRepository(
             raw = raw,
             normalized = normalized,
             hash = hash,
-            simHash = simHash,
+            simHash = TextFingerprint.simHash64(normalized),
             metadataJson = command.metadataJson,
         )
     }

@@ -61,40 +61,6 @@ abstract class CaptureWriteDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     protected abstract suspend fun insertMemoryAsset(link: MemoryAssetEntity)
 
-    @Query("""
-        UPDATE capture_event
-        SET raw_text = :rawText,
-            normalized_text = :normalizedText,
-            content_hash = :contentHash,
-            sim_hash = :simHash,
-            metadata_json = :metadataJson,
-            captured_at = :capturedAt
-        WHERE id = :eventId
-    """)
-    protected abstract suspend fun updateNotificationEvent(
-        eventId: String,
-        rawText: String,
-        normalizedText: String,
-        contentHash: String,
-        simHash: Long,
-        metadataJson: String?,
-        capturedAt: Long,
-    )
-
-    @Query("""
-        UPDATE memory
-        SET title = :title,
-            body = :body,
-            updated_at = :updatedAt
-        WHERE source_event_id = :eventId
-    """)
-    protected abstract suspend fun updateNotificationMemory(
-        eventId: String,
-        title: String?,
-        body: String,
-        updatedAt: Long,
-    )
-
     @Transaction
     open suspend fun insertCapture(
         event: CaptureEventEntity,
@@ -104,34 +70,6 @@ abstract class CaptureWriteDao {
         insertEvent(event)
         insertMemory(memory)
         memoryAsset?.let { insertMemoryAsset(it) }
-    }
-
-    @Transaction
-    open suspend fun updateNotificationCapture(
-        eventId: String,
-        rawText: String,
-        normalizedText: String,
-        contentHash: String,
-        simHash: Long,
-        metadataJson: String?,
-        title: String?,
-        updatedAt: Long,
-    ) {
-        updateNotificationEvent(
-            eventId = eventId,
-            rawText = rawText,
-            normalizedText = normalizedText,
-            contentHash = contentHash,
-            simHash = simHash,
-            metadataJson = metadataJson,
-            capturedAt = updatedAt,
-        )
-        updateNotificationMemory(
-            eventId = eventId,
-            title = title,
-            body = rawText,
-            updatedAt = updatedAt,
-        )
     }
 }
 
@@ -270,6 +208,7 @@ interface MemoryDao {
     @Query("DELETE FROM memory WHERE id = :id")
     suspend fun delete(id: String)
 }
+
 
 @Dao
 interface AssetDao {
