@@ -1,165 +1,103 @@
-# Cortex Relay v1.0 — Single Update Acceptance Checklist
+# Cortex Relay v1.0 — Final Acceptance Checklist
 
-This file is the source of truth for the next device release.
+This file is the release source of truth for Cortex Relay v1.0.
 
-## Release rule
-
-Do **not** publish feature-by-feature device APKs for intermediate progress. Development may happen in several commits. Once implementation blockers **1–7** are code-complete and CI-green, produce one combined device candidate and use it for blocker **8**.
-
-If the combined device test exposes a real blocker, keep it red, fix that blocker, and repeat the candidate only because acceptance failed — never because an individual sub-feature deserves its own APK.
-
-Status legend:
-- ✅ GREEN — implemented and validated enough for its current gate
-- ❌ RED — incomplete or failed validation; blocks v1.0 acceptance
-
-## v1.0 acceptance status
+## FINAL RELEASE STATUS
 
 - ✅ **ALL IMPLEMENTATION / ACCEPTANCE BLOCKERS 1–8 ARE GREEN.**
 - ✅ Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) passed the combined real-device acceptance gate.
-- ✅ Durable recovery, exact Cortex ACK completion, duplicate suppression, MessagingStyle delta delivery, multi-account identity, lifecycle tracking, evidence normalization/provenance and conservative classification have all been exercised at their required acceptance level.
+- ✅ Final release identity is `versionCode 13`, `versionName 1.0.0`.
+- ✅ Package remains `com.kareem.secondbrain` for update-in-place compatibility.
+- ✅ Local Bus wire contract remains `CORTEX_INGEST_V1` with `connector_id = second_brain`.
+- ✅ Permanent signer and v2+v3 signing policy remain unchanged.
+- ✅ v1.0 scope is **FROZEN**. No new feature work belongs in the finalization commit set.
 
-## Already green
+## RELEASE RULE
 
-- ✅ **Android capture works** — NotificationListener capture is running and stored events are visible in Relay diagnostics.
-- ✅ **Cortex Local Bus V1 connectivity works** — `CORTEX_INGEST_V1`, connector `second_brain`, endpoint connected.
-- ✅ **Per-event Cortex ACK correlation works** — Relay reports delivery only after Cortex ACKs the exact `event_id`; `Messenger.send()` alone is not treated as delivered.
-- ✅ **Retry-safe V1 event identity works** — retries reuse the same wire event id and Cortex can return duplicate acceptance.
-- ✅ **Recent Signals is human-readable and inspectable** — app/source, sender/title, preview, delivery state and tap-for-details exist.
-- ✅ **Diagnostic accounting is explicit** — captured events, send attempts, ACKed deliveries, retry/failure incidents, lifecycle counters and per-signal delivery accounting are exported.
-- ✅ **Update-in-place / permanent signer path works** — package remains `com.kareem.secondbrain`; permanent signer is preserved; installation uses `pm install -r`.
+v1.0 finalization may change only release metadata, build/sign/install helpers, and release documentation. Any behavior change discovered after this freeze belongs in a new candidate only if it blocks release acceptance; otherwise it moves to v1.1 / Signal V2 backlog.
 
-## Candidate history
+No PR merge is implied by acceptance or finalization.
 
-### Candidate 1 — FAILED acceptance, useful evidence retained
+## ACCEPTED DEVICE EVIDENCE
 
-Candidate 1 (`versionCode 10`, `1.0.0-relay-v1-candidate`) proved several important paths on the real device:
-
-- ✅ Relay → Cortex exact ACK path worked: diagnostic showed 6 captured, 6 send attempts, 6 correlated Cortex ACK deliveries, 0 rejection, 0 waiting and 0 retry incidents.
-- ✅ Lifecycle observation worked on real notifications: POSTED / UPDATED / REMOVED counters moved and exact duplicate updates were suppressed.
-- ✅ Stable notification/logical identities were visible across POSTED/UPDATED events.
-- ❌ WhatsApp exposed a real duplicate-evidence case: Android posted both the useful child message notification and a group-summary/container notification at nearly the same time. Candidate 1 forwarded both.
-- ❌ Candidate 1 diagnostic did not export normalized source/profile and conversation identities.
-
-### Candidate 2 — duplicate/account proof PASSED; message classification defect found
-
-Candidate 2 (`versionCode 11`, `1.0.0-relay-v1-candidate2`) was installed and tested on the real device.
-
-- ✅ Diagnostic showed 4 captured events split deterministically into 2 Cortex deliveries + 2 local filtered Android group summaries.
-- ✅ Both delivered child notifications received correlated Cortex ACKs.
-- ✅ Group-summary containers had `DROP_CONFIRMED_NOISE`, zero send attempts and zero Cortex signal IDs.
-- ✅ Zero rejection, zero waiting/in-flight and zero retry/delivery incidents.
-- ✅ Two WhatsApp account/profile surfaces were distinguishable from Android evidence: the two message pairs had different `source_profile_identity` values and different conversation identities, each based on Android `shortcutId`.
-- ❌ The useful forwarded child notification was classified `OTHER` while the filtered group summary was classified `HUMAN_MESSAGE`.
-
-### Candidate 3 — notification evidence acceptance PASSED
-
-Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) was installed and tested on the real device after generalizing Android conversation classification.
-
-- ✅ Real-device diagnostic showed 4 captured WhatsApp evidence rows split into exactly 2 Cortex deliveries + 2 local filtered Android group summaries.
-- ✅ Both useful forwarded child notifications were classified `HUMAN_MESSAGE`.
-- ✅ Both delivered child notifications received correlated Cortex ACKs (`signal 7958` and `signal 7961`).
-- ✅ Matching group-summary/container rows were classified as confirmed noise for delivery purposes, retained locally, had zero send attempts and zero Cortex signal IDs.
-- ✅ Zero rejection, zero waiting/in-flight and zero retry/delivery incidents.
-- ✅ The two WhatsApp account/profile surfaces remained distinguishable: `source-profile_71b76bc2...` vs `source-profile_c8b7171f...`, with different conversation identities grounded in Android `shortcutId`.
-- ✅ No WhatsApp-specific text rule was added; the delivered child is recognized as a human message using structured/replyable Android conversation evidence.
-
-### Candidate 3 — durable outbox end-to-end recovery PASSED
-
-Real-device durable-outbox acceptance was repeated with the corrected helper so the recovered Relay process was not force-stopped after Cortex restoration.
-
-- ✅ A real WhatsApp event remained pending while Cortex was unavailable.
-- ✅ Relay process was killed and restarted while Cortex remained unavailable.
-- ✅ Before restoring Cortex, diagnostic reported `waiting_or_in_flight = 1` and restored exact pending wire event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` from durable storage.
-- ✅ That recovered process showed `captured = 0`, `send_attempts = 0`, `delivered_cortex_ack = 0`, proving the item was recovered rather than recaptured.
-- ✅ Cortex bind failures while disabled left the durable item retained; the pre-restore diagnostic recorded 10 retry/delivery incidents and the explicit retained-event bind-failure reason.
-- ✅ After Cortex was restored, the **same recovered Relay process** sent exactly one ingest attempt and received exactly one correlated Cortex ACK.
-- ✅ Final diagnostic reported `connection_state = CONNECTED`, `send_attempts = 1`, `delivered_cortex_ack = 1`, `rejected_by_cortex = 0`, and `waiting_or_in_flight = 0`.
-- ✅ Cortex accepted the recovered event as signal `7972`.
-- ✅ No new Relay capture occurred during completion (`captured = 0`), so recovery completion did not create a second logical evidence row in Relay.
-- ✅ Retry accounting is explained: repeated bind/retry incidents occurred only while Cortex was intentionally disabled; once Cortex returned, one send completed with one ACK and zero backlog.
-
-### Candidate 3 — live MessagingStyle delta PASSED
-
-A final real-device WhatsApp test kept the first notification live and delivered a second message in the same conversation.
-
-- ✅ The first useful child event was captured as `POSTED`, classified `HUMAN_MESSAGE`, forwarded once and ACKed by Cortex as signal `7973`.
-- ✅ The later update for the same notification/conversation was captured as `UPDATED` with `update_sequence = 2`.
-- ✅ Relay generated a distinct logical delta identity `signal-message-delta_cab45e21e295e341584ed18c21a32d72` for the new message evidence instead of replaying the original notification snapshot as the same logical signal.
-- ✅ The delta was classified `HUMAN_MESSAGE`, forwarded once and ACKed by Cortex as signal `7974`.
-- ✅ The matching Android group-summary update remained local with `DROP_CONFIRMED_NOISE`, zero send attempts and zero Cortex signal id.
-- ✅ The same `conversation_identity` and `source_profile_identity` were preserved across the original child notification and the new-message delta.
-- ✅ Diagnostic ended with `rejected_by_cortex = 0`, `waiting_or_in_flight = 0`, and no new unexplained delivery issue incidents.
+- ✅ Android NotificationListener capture works and stored events are visible in Relay diagnostics.
+- ✅ Relay → Cortex Local Bus V1 connectivity works.
+- ✅ Relay marks delivery only after a correlated Cortex ACK for the exact `event_id`.
+- ✅ Durable outbox survives Relay process death while Cortex is unavailable.
+- ✅ The exact recovered pending event is delivered after Cortex returns, receives one correlated ACK, and leaves zero waiting backlog.
+- ✅ Retry accounting is explainable and retries preserve the same V1 wire event identity.
+- ✅ Notification lifecycle observes POSTED / UPDATED / REMOVED with stable notification-instance identity.
+- ✅ Exact duplicate updates are suppressed.
+- ✅ Android group-summary/container notifications are retained locally but do not create duplicate Cortex evidence.
+- ✅ Useful WhatsApp child notifications are classified `HUMAN_MESSAGE` and receive Cortex ACKs.
+- ✅ A second WhatsApp message arriving inside an already-live notification produces a distinct `signal-message-delta_...` logical signal and one Cortex ACK rather than replaying the old snapshot.
+- ✅ Two WhatsApp account/profile surfaces are distinguishable from Android evidence using different source-profile and conversation identities where Android exposes that evidence.
+- ✅ Rich MessagingStyle evidence, sender/conversation/timestamps, replyability, Person metadata and deterministic entity provenance are normalized.
+- ✅ New-message delta entities/classification use only the new evidence, preventing stale older message content from contaminating the delta.
+- ✅ Conservative signal/noise classification is in place without personal-priority reasoning inside Relay.
 
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
-- ✅ **1. Durable outbox across process death / reboot — end-to-end process-death recovery and final delivery proven**
-  - Undelivered delivery copies are persisted in a disk-backed outbox before send.
-  - Pending entries are restored on process startup, boot/package-replace hooks and NotificationListener startup.
-  - Entries are retired only after correlated Cortex ACK or explicit terminal rejection.
-  - Retry/recovery preserves the same stored event id and `sb_<eventId>` wire id.
-  - Real-device process-death acceptance restored exact event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` while Cortex remained disabled, then delivered it after Cortex returned with correlated ACK / Cortex signal `7972`.
-  - Final recovered-process diagnostic showed one send attempt, one ACK, zero rejection and zero waiting backlog.
-  - Diagnostics expose exact `restored_pending_event_ids` for device acceptance.
+- ✅ **1. Durable outbox across process death / reboot**
+  - Disk-backed delivery copies are persisted before send.
+  - Entries are removed only after correlated Cortex ACK or explicit terminal rejection.
+  - Process-start / boot / package-replace recovery restores pending entries.
+  - Real-device recovery + final delivery completion passed.
 
-- ✅ **2. Notification lifecycle tracking — implementation + real-device behavior validated**
-  - Durable per-notification state tracks `POSTED → UPDATED → REMOVED` using stable Android/source identity.
-  - Updates retain generation and sequence instead of becoming unrelated snapshots by default.
-  - A removal closes the current notification instance; a later repost starts a new generation.
-  - Real-device diagnostics observed POSTED and UPDATED transitions plus exact duplicate update suppression.
+- ✅ **2. Notification lifecycle tracking**
+  - Stable notification identity with POSTED / UPDATED / REMOVED state and update sequence.
+  - Removal closes an instance; repost starts a new generation.
 
-- ✅ **3. Meaningful delta / duplicate evidence — real-device PASSED**
-  - ✅ Exact repeated snapshots are suppressed as duplicates.
-  - ✅ Android `FLAG_GROUP_SUMMARY` containers are retained locally but suppressed from Cortex delivery while grouped child notifications remain forwardable.
-  - ✅ Candidate 3 real-device test produced exactly one Cortex-delivered `HUMAN_MESSAGE` child per tested WhatsApp message while the matching summary stayed local.
-  - ✅ A real live-notification WhatsApp update produced a distinct `signal-message-delta_...` logical identity, one send attempt and one Cortex ACK (`signal 7974`) while preserving the same conversation/source identities.
-  - ✅ Deterministic percentage/progress-only machine churn is retained locally for forensics but suppressed from Cortex delivery.
+- ✅ **3. Meaningful delta / duplicate evidence**
+  - Exact repeated snapshots are suppressed.
+  - Android group summaries stay local.
+  - Genuine MessagingStyle message updates produce new-message deltas and distinct logical delta identities.
+  - Deterministic machine churn can be retained locally without consuming Cortex delivery.
 
-- ✅ **4. Multi-account / conversation identity — real-device proof PASSED**
-  - Source identity includes package + Android user/profile + UID rather than package name alone.
-  - Notification/conversation identity uses notification key, shortcut/conversation metadata and Person/participant evidence when available.
-  - Candidate 3 real-device diagnostic showed different `source_profile_identity` and conversation identities for the two WhatsApp account/profile surfaces.
-  - Both conversation identities were grounded in Android `shortcutId`; Relay did not invent an account label.
+- ✅ **4. Multi-account / conversation identity**
+  - Source identity uses package + Android user/profile + UID evidence.
+  - Conversation identity uses shortcut/conversation/Person evidence where available.
+  - Real-device WhatsApp account/profile separation passed.
 
 - ✅ **5. Rich evidence normalization + provenance**
-  - Full MessagingStyle structures, sender/conversation/timestamps, replyability, Person and Android metadata are captured.
-  - Deterministic extraction covers visible URLs, phone numbers, OTPs, explicit dates/times, money values, references/tracking/order-like identifiers and shown person names.
-  - Every entity carries source field + exact span + confidence.
-  - New-message delta classification/entities use only the new evidence, preventing stale older messages from contaminating the new signal.
-  - Compact oversized payload handling preserves Relay normalization/provenance metadata instead of dropping it.
+  - MessagingStyle structures, sender, conversation, timestamps, replyability, Person and Android metadata are preserved.
+  - URLs, phone numbers, OTPs, explicit dates/times, money, references/tracking/order-like identifiers and shown names carry source/span provenance.
+  - Compact oversized payload handling preserves Relay normalization/provenance metadata.
 
 - ✅ **6. Stable logical signal identity**
-  - One notification instance keeps one logical signal identity across ordinary lifecycle/content updates; `update_sequence` distinguishes revisions.
-  - A genuine new MessagingStyle message delta gets a distinct logical signal identity.
-  - Retry/replay remains anchored to the same captured `event_id` / V1 wire id.
-  - No breaking `CORTEX_SIGNAL_V2` change was introduced; new identity/lifecycle evidence is carried inside compatible metadata.
+  - Ordinary lifecycle/content updates retain one logical notification signal identity.
+  - Genuine new-message deltas get distinct logical delta identities.
+  - Retry/replay remains anchored to the same captured event / V1 wire id.
+  - No breaking `CORTEX_SIGNAL_V2` rollout was introduced.
 
 - ✅ **7. Conservative signal/noise classification foundation**
-  - Signal type classification covers human_message, email, call, sms, otp, banking, delivery, calendar, security, download, system_noise and other.
+  - human_message, email, call, sms, otp, banking, delivery, calendar, security, download, system_noise and other foundations exist.
   - `FORWARD / LOW_VALUE / DROP_CONFIRMED_NOISE` remains conservative.
-  - Confirmed Android container/control surfaces and deterministic machine churn can be suppressed while uncertain evidence is preserved.
-  - Personal priority/relevance remains Cortex's responsibility.
+  - Personal relevance/priority remains Cortex responsibility.
 
-## DEVICE ACCEPTANCE GATE — candidate 3 PASSED
+- ✅ **8. Combined real-device acceptance gate**
+  - Cortex available → useful human-message child → one correlated ACK.
+  - Cortex unavailable → durable pending event retained.
+  - Relay killed/restarted while Cortex unavailable → exact pending event restored.
+  - Cortex restored → same recovered event delivered → one ACK → zero waiting backlog.
+  - Live WhatsApp notification updated with a second message → distinct message-delta signal → one ACK.
+  - Group summaries remain local and do not create duplicate Cortex evidence.
+  - Multi-account/profile identity remains distinguishable where Android evidence permits.
+  - Final diagnostics show zero unexplained rejection/backlog.
 
-- ✅ **8. One combined real-device acceptance test**
-  - ✅ Cortex available: real WhatsApp messages → exactly one useful `HUMAN_MESSAGE` child delivery each → correlated ACK / Cortex signal id; Android group summaries stayed local/filtered.
-  - ✅ Cortex unavailable: real message persisted in durable outbox and remained waiting.
-  - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` was reported.
-  - ✅ Restore Cortex → same recovered pending signal delivered with one ingest attempt, one correlated ACK, Cortex signal `7972`, and waiting returned to zero.
-  - ✅ Updated/summary notification behavior did not create duplicate Cortex evidence for the WhatsApp cases exercised.
-  - ✅ New MessagingStyle message inside an already-live updated notification produced a distinct message-delta logical signal and a single correlated Cortex ACK (`signal 7974`).
-  - ✅ Two WhatsApp account/profile surfaces are proven distinguishable where Android evidence permits.
-  - ✅ Confirmed Android group-summary/container noise remains local and does not consume Cortex delivery.
-  - ✅ Final diagnostics show zero unexplained backlog/rejections; retry incidents are explained by Cortex being intentionally disabled during the durable-outbox test.
+## Candidate history
 
-## Explicitly not required before v1.0
+- Candidate 1 (`versionCode 10`) exposed Android child + group-summary duplicate delivery.
+- Candidate 2 (`versionCode 11`) fixed duplicate summary delivery and proved account/profile separation, but exposed useful-child classification as `OTHER`.
+- Candidate 3 (`versionCode 12`) fixed general Android conversation classification and passed notification, durable-outbox, multi-account, lifecycle and live MessagingStyle-delta acceptance.
+- Final v1.0 (`versionCode 13`) contains no new behavioral feature beyond the accepted Candidate 3 scope; it is release finalization only.
 
-These are valuable later but must not distract from the acceptance gate:
+## Explicitly deferred beyond v1.0
 
 - Cortex → Relay capture-policy feedback loop.
-- Full breaking `CORTEX_SIGNAL_V2` rollout.
-- Long-term personal memory or reasoning inside Relay (prohibited by product boundary).
-- Cosmetic app-specific filtering work that does not improve the general evidence gateway.
+- Breaking `CORTEX_SIGNAL_V2` rollout.
+- Long-term personal memory or reasoning inside Relay — prohibited by product boundary.
+- Cosmetic app-specific filtering that does not improve the general evidence gateway.
 
 ## Product invariant
 
