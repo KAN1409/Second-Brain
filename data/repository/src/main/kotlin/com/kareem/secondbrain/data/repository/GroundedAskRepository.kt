@@ -6,7 +6,10 @@ import com.kareem.secondbrain.ai.api.AiClaim as ProviderClaim
 import com.kareem.secondbrain.ai.api.AiProvider
 import com.kareem.secondbrain.ai.api.AiProviderUnavailableException
 import com.kareem.secondbrain.ai.api.Evidence
+import com.kareem.secondbrain.core.model.Memory
+import com.kareem.secondbrain.core.model.SearchHit
 import com.kareem.secondbrain.core.model.SearchRequest
+import com.kareem.secondbrain.core.model.TimelineRequest
 import com.kareem.secondbrain.domain.AskAnswer
 import com.kareem.secondbrain.domain.AskClaim
 import com.kareem.secondbrain.domain.AskEvidence
@@ -15,6 +18,9 @@ import com.kareem.secondbrain.domain.AskSynthesisMode
 import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.MemoryRepository
 import com.kareem.secondbrain.domain.MemorySearchRepository
+import kotlinx.coroutines.flow.first
+import java.time.Clock
+import kotlin.math.abs
 import kotlin.math.round
 
 class GroundedAskRepository(
@@ -23,6 +29,7 @@ class GroundedAskRepository(
     private val policyRepository: CapturePolicyRepository,
     private val aiProvider: AiProvider? = null,
     private val cloudAiEnabled: suspend () -> Boolean = { false },
+    private val clock: Clock = Clock.systemDefaultZone(),
 ) : AskRepository {
 
     override suspend fun ask(question: String): AskAnswer {
@@ -39,17 +46,26 @@ class GroundedAskRepository(
             )
         }
 
-        val hits = searchRepository.search(SearchRequest(query = normalizedQuestion, limit = SEARCH_LIMIT))
-        val bestPerMemory = linkedMapOf<String, com.kareem.secondbrain.core.model.SearchHit>()
-        for (hit in hits) {
-            bestPerMemory.putIfAbsent(hit.memoryId, hit)
-            if (bestPerMemory.size >= MAX_EVIDENCE_MEMORIES) break
-        }
-
         val globalCloudEnabled = runCatching { cloudAiEnabled() }.getOrDefault(false)
+        val plan = AskQueryPlanner.plan(
+            question = normalizedQuestion,
+            clock = clock,
+            aiProvider = aiProvider,
+            allowModelPlanning = globalCloudEnabled,
+        )
+        val hits = retrieveAcrossPlan(plan)
+        val candidates = hits.mapNotNull { hit ->
+            memoryRepository.getMemory(hit.memoryId)?.let { memory ->
+                val softHintBoost = if (memory.kind in plan.softKindHints) SOFT_KIND_HINT_BOOST else 0.0
+                AskCandidate(hit, memory, (hit.score + softHintBoost).coerceIn(0.0, 1.0))
+            }
+        }.sortedByDescending(AskCandidate::score)
+            .take(MAX_EVIDENCE_MEMORIES)
+
         val evidence = mutableListOf<AskEvidence>()
-        for ((_, hit) in bestPerMemory) {
-            val memory = memoryRepository.getMemory(hit.memoryId) ?: continue
+        for (candidate in candidates) {
+            val hit = candidate.hit
+            val memory = candidate.memory
             val sourcePackage = memory.sourcePackage
             val policyAllowsCloud = sourcePackage == null || runCatching {
                 policyRepository.get(sourcePackage).allowAiUpload
@@ -70,7 +86,7 @@ class GroundedAskRepository(
                 sourcePackage = sourcePackage,
                 sourceLabel = sourcePackage ?: memory.kind.name,
                 occurredAt = memory.startedAt,
-                retrievalScore = hit.score.coerceIn(0.0, 1.0),
+                retrievalScore = candidate.score,
                 cloudEligible = globalCloudEnabled && policyAllowsCloud,
             )
         }
@@ -162,6 +178,101 @@ class GroundedAskRepository(
         )
     }
 
+    /**
+     * Execute several interpretations without allowing any one interpretation to exclude the others.
+     * Text/semantic retrieval is fused with a temporal-window channel whenever the user explicitly
+     * supplied a time or date. That means a question such as "what did I do around 3pm?" can still
+     * retrieve the actual events in that window even when no text token such as "do" exists in memory.
+     */
+    private suspend fun retrieveAcrossPlan(plan: AskSearchPlan): List<SearchHit> {
+        val fused = linkedMapOf<String, FusedHit>()
+        val hasTemporalChannel = plan.from != null && plan.to != null
+        val totalChannels = plan.queries.size + if (hasTemporalChannel) 1 else 0
+
+        plan.queries.forEach { query ->
+            val hits = searchRepository.search(
+                SearchRequest(
+                    query = query,
+                    from = plan.from,
+                    to = plan.to,
+                    limit = SEARCH_LIMIT,
+                ),
+            )
+            hits.forEachIndexed { index, hit ->
+                val current = fused.getOrPut(hit.memoryId) { FusedHit(bestHit = hit) }
+                current.reciprocalRank += 1.0 / (PLAN_RRF_K + index + 1.0)
+                current.channelsMatched += 1
+                if (hit.score > current.bestHit.score) current.bestHit = hit
+            }
+        }
+
+        if (hasTemporalChannel) {
+            addTemporalWindowChannel(plan, fused)
+        }
+
+        if (fused.isEmpty()) return emptyList()
+
+        val maxRrf = fused.values.maxOf(FusedHit::reciprocalRank).coerceAtLeast(1e-9)
+        return fused.values.map { item ->
+            val agreement = (item.channelsMatched.toDouble() / totalChannels.coerceAtLeast(1)).coerceIn(0.0, 1.0)
+            val score = (
+                0.62 * (item.reciprocalRank / maxRrf) +
+                    0.28 * item.bestHit.score.coerceIn(0.0, 1.0) +
+                    0.10 * agreement
+                ).coerceIn(0.0, 1.0)
+            item.bestHit.copy(score = score)
+        }.sortedByDescending(SearchHit::score)
+            .take(SEARCH_LIMIT)
+    }
+
+    private suspend fun addTemporalWindowChannel(
+        plan: AskSearchPlan,
+        fused: MutableMap<String, FusedHit>,
+    ) {
+        val from = plan.from ?: return
+        val to = plan.to ?: return
+        val fromMs = from.toEpochMilli()
+        val toMs = to.toEpochMilli()
+        if (toMs <= fromMs) return
+        val midpointMs = fromMs + (toMs - fromMs) / 2L
+        val halfWindowMs = ((toMs - fromMs) / 2L).coerceAtLeast(1L)
+
+        val memories = memoryRepository.observeTimeline(
+            TimelineRequest(from = from, to = to),
+        ).first()
+
+        val rankedByTime = memories.asSequence()
+            .map { memory ->
+                val distanceMs = abs(memory.startedAt.toEpochMilli() - midpointMs)
+                val proximity = (1.0 - distanceMs.toDouble() / halfWindowMs.toDouble()).coerceIn(0.0, 1.0)
+                memory to proximity
+            }
+            .sortedWith(
+                compareByDescending<Pair<Memory, Double>> { it.second }
+                    .thenByDescending { it.first.startedAt },
+            )
+            .take(TEMPORAL_WINDOW_LIMIT)
+            .toList()
+
+        rankedByTime.forEachIndexed { index, (memory, proximity) ->
+            val temporalScore = (TEMPORAL_SCORE_FLOOR + (1.0 - TEMPORAL_SCORE_FLOOR) * proximity)
+                .coerceIn(0.0, 1.0)
+            val snippet = memory.body.ifBlank {
+                memory.summary?.takeIf(String::isNotBlank) ?: memory.title.orEmpty()
+            }
+            val hit = SearchHit(
+                memoryId = memory.id,
+                chunkId = null,
+                snippet = snippet,
+                score = temporalScore,
+            )
+            val current = fused.getOrPut(memory.id) { FusedHit(bestHit = hit) }
+            current.reciprocalRank += 1.0 / (PLAN_RRF_K + index + 1.0)
+            current.channelsMatched += 1
+            if (hit.score > current.bestHit.score) current.bestHit = hit
+        }
+    }
+
     private fun deterministicConfidence(
         evidence: List<AskEvidence>,
         claims: List<ValidatedClaim>,
@@ -188,8 +299,24 @@ class GroundedAskRepository(
         const val SEARCH_LIMIT = 24
         const val MAX_EVIDENCE_MEMORIES = 12
         const val MAX_EVIDENCE_CHARS = 1800
+        const val PLAN_RRF_K = 30.0
+        const val SOFT_KIND_HINT_BOOST = 0.04
+        const val TEMPORAL_WINDOW_LIMIT = 64
+        const val TEMPORAL_SCORE_FLOOR = 0.55
     }
 }
+
+private data class FusedHit(
+    var bestHit: SearchHit,
+    var reciprocalRank: Double = 0.0,
+    var channelsMatched: Int = 0,
+)
+
+private data class AskCandidate(
+    val hit: SearchHit,
+    val memory: Memory,
+    val score: Double,
+)
 
 internal data class ValidatedClaim(
     val claim: AskClaim,
