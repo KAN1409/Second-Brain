@@ -122,7 +122,7 @@ private fun StatusBarNotification.toCaptureCommand(importance: Int?): CaptureCom
         put("id", id)
         put("tag", tag ?: JSONObject.NULL)
         put("uid", uid)
-        put("androidUserId", user.identifier)
+        put("androidUserId", userId)
         put("groupKey", groupKey ?: JSONObject.NULL)
         put("overrideGroupKey", overrideGroupKey ?: JSONObject.NULL)
         put("isGroup", isGroup)
