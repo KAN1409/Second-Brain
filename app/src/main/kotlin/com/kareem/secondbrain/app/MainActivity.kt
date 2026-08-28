@@ -31,12 +31,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
-import com.kareem.secondbrain.capture.android.voice.VoiceRecordingService
 import com.kareem.secondbrain.capture.android.health.InstalledAppCatalog
 import com.kareem.secondbrain.capture.android.health.InstalledAppEntry
+import com.kareem.secondbrain.capture.android.voice.VoiceRecordingService
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
+import com.kareem.secondbrain.core.model.SearchRequest
 import com.kareem.secondbrain.core.model.TimelineRequest
 import com.kareem.secondbrain.core.privacy.DefaultCapturePolicy
 import com.kareem.secondbrain.domain.AssetRepository
@@ -46,6 +47,7 @@ import com.kareem.secondbrain.domain.CaptureRepository
 import com.kareem.secondbrain.domain.CaptureResult
 import com.kareem.secondbrain.domain.EnrichmentScheduler
 import com.kareem.secondbrain.domain.MemoryRepository
+import com.kareem.secondbrain.domain.MemorySearchRepository
 import com.kareem.secondbrain.feature.ask.AskScreen
 import com.kareem.secondbrain.feature.capture.CaptureScreen
 import com.kareem.secondbrain.feature.search.SearchScreen
@@ -64,6 +66,7 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
     @Inject lateinit var captureRepository: CaptureRepository
     @Inject lateinit var memoryRepository: MemoryRepository
+    @Inject lateinit var memorySearchRepository: MemorySearchRepository
     @Inject lateinit var policyRepository: CapturePolicyRepository
     @Inject lateinit var accessChecker: CaptureAccessChecker
     @Inject lateinit var installedAppCatalog: InstalledAppCatalog
@@ -79,6 +82,7 @@ class MainActivity : ComponentActivity() {
             SecondBrainRoot(
                 captureRepository = captureRepository,
                 memoryRepository = memoryRepository,
+                memorySearchRepository = memorySearchRepository,
                 policyRepository = policyRepository,
                 installedAppCatalog = installedAppCatalog,
                 assetRepository = assetRepository,
@@ -110,6 +114,7 @@ private val destinations = listOf(
 private fun SecondBrainRoot(
     captureRepository: CaptureRepository,
     memoryRepository: MemoryRepository,
+    memorySearchRepository: MemorySearchRepository,
     policyRepository: CapturePolicyRepository,
     installedAppCatalog: InstalledAppCatalog,
     assetRepository: AssetRepository,
@@ -201,7 +206,11 @@ private fun SecondBrainRoot(
                     onToggleCapture = toggleCapture,
                 )
             }
-            composable("search") { SearchScreen() }
+            composable("search") {
+                SearchScreen(
+                    onSearch = { query -> memorySearchRepository.search(SearchRequest(query = query)) },
+                )
+            }
             composable("ask") { AskScreen() }
             composable("settings") {
                 SettingsScreen(
