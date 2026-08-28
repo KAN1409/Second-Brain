@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -50,7 +52,10 @@ fun SettingsScreen(
 ) {
     var apiKey by remember { mutableStateOf("") }
     Column(
-        modifier = modifier.fillMaxSize().padding(20.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
@@ -93,8 +98,16 @@ fun SettingsScreen(
         HorizontalDivider()
         Text("Ask My Brain • Gemini BYOK", style = MaterialTheme.typography.titleMedium)
         Text(
-            if (geminiKeyConfigured) "Gemini key configured. Cloud synthesis can use only memories whose app policy allows AI upload."
+            if (geminiKeyConfigured) "Gemini key configured. Cloud synthesis can use only memories whose app policy explicitly allows AI upload."
             else "No Gemini key configured. Ask remains evidence-only and does not upload app memories.",
+        )
+        Text(
+            "Personal/sideload BYOK only. A key stored on a phone is encrypted at rest with Android Keystore, but a determined attacker with runtime access may still extract it. Production deployments should proxy Gemini through a backend.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "Cloud upload stays off per app until enabled in App policies. Gemini free-tier data handling may differ from paid tiers, so review Google's current terms before enabling cloud upload.",
+            style = MaterialTheme.typography.bodySmall,
         )
         OutlinedTextField(
             value = apiKey,
