@@ -9,6 +9,7 @@ import com.kareem.secondbrain.core.database.CapturePolicyDao
 import com.kareem.secondbrain.core.database.CaptureStateDao
 import com.kareem.secondbrain.core.database.CaptureWriteDao
 import com.kareem.secondbrain.core.database.MemoryEntity
+import com.kareem.secondbrain.core.database.MemoryAssetEntity
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
 import com.kareem.secondbrain.core.model.MemoryKind
@@ -194,6 +195,9 @@ class RoomCaptureRepository(
             is CaptureCommand.File -> command.assetId
             else -> null
         }
+        if (command is CaptureCommand.Image && events.countBySourceAndContentHash(SourceType.IMAGE.name, hash) > 0) {
+            return CaptureResult.Ignored(IgnoreReason.EXACT_DUPLICATE)
+        }
         return insert(
             source = source,
             memoryKind = kind,
@@ -263,6 +267,7 @@ class RoomCaptureRepository(
                     updated_at = now,
                     expires_at = expiresAt,
                 ),
+                assetId?.let { MemoryAssetEntity(memory_id = memoryId, asset_id = it) },
             )
             when (source) {
                 SourceType.NOTIFICATION -> state.markNotification(occurredAt.toEpochMilli())

@@ -17,6 +17,21 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.SecondBrain">
         <activity
+            android:name="com.kareem.secondbrain.app.ShareReceiverActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name="com.kareem.secondbrain.app.MainActivity"
             android:exported="true">
             <intent-filter>

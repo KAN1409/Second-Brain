@@ -18,4 +18,7 @@ android {
 
 dependencies {
     implementation(project(":ai:api"))
+    implementation(libs.mlkit.text.recognition)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.tesseract.android)
 }

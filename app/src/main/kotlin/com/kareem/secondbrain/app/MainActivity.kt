@@ -2,6 +2,7 @@ package com.kareem.secondbrain.app
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -10,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -21,12 +23,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
+import com.kareem.secondbrain.capture.android.voice.VoiceRecordingService
 import com.kareem.secondbrain.capture.android.health.InstalledAppCatalog
 import com.kareem.secondbrain.capture.android.health.InstalledAppEntry
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
@@ -34,10 +39,15 @@ import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
 import com.kareem.secondbrain.core.model.TimelineRequest
 import com.kareem.secondbrain.core.privacy.DefaultCapturePolicy
+import com.kareem.secondbrain.domain.AssetRepository
+import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CapturePolicyRepository
 import com.kareem.secondbrain.domain.CaptureRepository
+import com.kareem.secondbrain.domain.CaptureResult
+import com.kareem.secondbrain.domain.EnrichmentScheduler
 import com.kareem.secondbrain.domain.MemoryRepository
 import com.kareem.secondbrain.feature.ask.AskScreen
+import com.kareem.secondbrain.feature.capture.CaptureScreen
 import com.kareem.secondbrain.feature.search.SearchScreen
 import com.kareem.secondbrain.feature.settings.AppPoliciesScreen
 import com.kareem.secondbrain.feature.settings.AppPolicyItem
@@ -47,6 +57,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -56,6 +67,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var policyRepository: CapturePolicyRepository
     @Inject lateinit var accessChecker: CaptureAccessChecker
     @Inject lateinit var installedAppCatalog: InstalledAppCatalog
+    @Inject lateinit var assetRepository: AssetRepository
+    @Inject lateinit var enrichmentScheduler: EnrichmentScheduler
 
     private val accessSnapshotState = mutableStateOf(CaptureAccessSnapshot(false, false, false, false))
 
@@ -68,6 +81,8 @@ class MainActivity : ComponentActivity() {
                 memoryRepository = memoryRepository,
                 policyRepository = policyRepository,
                 installedAppCatalog = installedAppCatalog,
+                assetRepository = assetRepository,
+                enrichmentScheduler = enrichmentScheduler,
                 access = accessSnapshotState.value,
                 openNotificationAccess = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                 openAccessibilityAccess = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
@@ -97,6 +112,8 @@ private fun SecondBrainRoot(
     memoryRepository: MemoryRepository,
     policyRepository: CapturePolicyRepository,
     installedAppCatalog: InstalledAppCatalog,
+    assetRepository: AssetRepository,
+    enrichmentScheduler: EnrichmentScheduler,
     access: CaptureAccessSnapshot,
     openNotificationAccess: () -> Unit,
     openAccessibilityAccess: () -> Unit,
@@ -112,7 +129,30 @@ private fun SecondBrainRoot(
     val installedApps by produceState(initialValue = emptyList<InstalledAppEntry>(), installedAppCatalog) {
         value = withContext(Dispatchers.Default) { installedAppCatalog.launchableApps() }
     }
+    val context = LocalContext.current
     val microphoneLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    fun startVoiceService() {
+        ContextCompat.startForegroundService(
+            context,
+            Intent(context, VoiceRecordingService::class.java).setAction(VoiceRecordingService.ACTION_START),
+        )
+    }
+    val voicePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startVoiceService()
+    }
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            val asset = assetRepository.importContentUri(uri.toString(), mimeType = context.contentResolver.getType(uri))
+            val result = captureRepository.ingest(CaptureCommand.Image(Instant.now(), assetId = asset.id, userSaved = true))
+            if (result is CaptureResult.Stored) enrichmentScheduler.enqueueOcr(result.eventId, asset.id)
+        }
+    }
+    val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) scope.launch {
+            val asset = assetRepository.importContentUri(uri.toString(), mimeType = context.contentResolver.getType(uri))
+            captureRepository.ingest(CaptureCommand.File(Instant.now(), assetId = asset.id, displayName = uri.lastPathSegment))
+        }
+    }
     val toggleCapture = {
         scope.launch {
             captureRepository.setCaptureMode(
@@ -123,8 +163,13 @@ private fun SecondBrainRoot(
     }
 
     Scaffold(
+        floatingActionButton = {
+            if (current != "capture" && current != "appPolicies") {
+                FloatingActionButton(onClick = { navController.navigate("capture") }) { Text("+") }
+            }
+        },
         bottomBar = {
-            if (current != "appPolicies") {
+            if (current != "appPolicies" && current != "capture") {
                 NavigationBar {
                     destinations.forEach { destination ->
                         NavigationBarItem(
@@ -168,6 +213,27 @@ private fun SecondBrainRoot(
                     onUsageAccess = openUsageAccess,
                     onMicrophoneAccess = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                     onAppPolicies = { navController.navigate("appPolicies") },
+                )
+            }
+            composable("capture") {
+                CaptureScreen(
+                    onAddNote = { text -> scope.launch { captureRepository.ingest(CaptureCommand.Note(Instant.now(), text = text)) } },
+                    onAddLink = { url -> scope.launch { captureRepository.ingest(CaptureCommand.Link(Instant.now(), url = url)) } },
+                    onStartVoice = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            startVoiceService()
+                        } else {
+                            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    onStopVoice = {
+                        context.startService(
+                            Intent(context, VoiceRecordingService::class.java).setAction(VoiceRecordingService.ACTION_STOP),
+                        )
+                    },
+                    onPickImage = { imageLauncher.launch("image/*") },
+                    onPickFile = { fileLauncher.launch("*/*") },
+                    onBack = { navController.popBackStack() },
                 )
             }
             composable("appPolicies") {

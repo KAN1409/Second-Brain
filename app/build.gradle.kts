@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.secondbrain"
         minSdk = 30
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.2.0-m1-dev"
+        versionCode = 3
+        versionName = "0.3.0-m2-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -28,11 +28,15 @@ android {
 
 dependencies {
     implementation(project(":core:database"))
+    implementation(project(":core:common"))
     implementation(project(":core:model"))
     implementation(project(":core:privacy"))
     implementation(project(":domain"))
     implementation(project(":data:repository"))
     implementation(project(":capture:android"))
+    implementation(project(":ai:api"))
+    implementation(project(":ai:whisper"))
+    implementation(project(":ai:ocr"))
     implementation(libs.androidx.sqlite.framework)
     implementation(project(":feature:timeline"))
     implementation(project(":feature:search"))
@@ -44,6 +48,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
     implementation(libs.androidx.navigation.compose)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -51,6 +57,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+    ksp(libs.androidx.hilt.compiler)
 
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.junit)
