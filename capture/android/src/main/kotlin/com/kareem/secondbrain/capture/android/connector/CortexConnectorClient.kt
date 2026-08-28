@@ -68,6 +68,7 @@ object CortexConnectorClient {
     private val draining: AtomicBoolean = AtomicBoolean(false)
     private val retryAttempt: AtomicInteger = AtomicInteger(0)
     private val mainHandler: Handler = Handler(Looper.getMainLooper())
+    private val ackTimeoutToken: Any = Any()
 
     @Volatile private var remote: Messenger? = null
     @Volatile private var appContext: Context? = null
@@ -133,6 +134,7 @@ object CortexConnectorClient {
                 remote = null
                 endpointReady = false
                 inFlight = null
+                cancelAckTimeout()
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
                 scheduleReconnect()
             }
@@ -317,18 +319,15 @@ object CortexConnectorClient {
             inFlight = null
             RelayRuntimeDiagnostics.markRetry(pending.eventId, "Cortex ACK timeout; same event retained for retry")
             resetBindingAndRetry()
-        }, ACK_TIMEOUT_MS)
+        }, ackTimeoutToken, ACK_TIMEOUT_MS)
     }
 
     private fun cancelAckTimeout() {
-        // ACK timeout callbacks self-identify against inFlight. Clearing callbacks here also removes
-        // obsolete timeout/reconnect work before immediately draining the next queue item.
-        mainHandler.removeCallbacksAndMessages(ACK_TIMEOUT_TOKEN)
+        mainHandler.removeCallbacksAndMessages(ackTimeoutToken)
     }
 
-    private val ACK_TIMEOUT_TOKEN = Any()
-
     private fun resetBindingAndRetry() {
+        cancelAckTimeout()
         endpointReady = false
         remote = null
         inFlight = null
