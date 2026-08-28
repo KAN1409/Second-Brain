@@ -2,6 +2,7 @@ name: Android CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -41,6 +42,6 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Second-Brain-M3-debug
+          name: Second-Brain-M4-ci-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
