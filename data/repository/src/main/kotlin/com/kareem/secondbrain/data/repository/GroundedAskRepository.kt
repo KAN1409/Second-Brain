@@ -6,6 +6,9 @@ import com.kareem.secondbrain.ai.api.AiClaim as ProviderClaim
 import com.kareem.secondbrain.ai.api.AiProvider
 import com.kareem.secondbrain.ai.api.AiProviderUnavailableException
 import com.kareem.secondbrain.ai.api.Evidence
+import com.kareem.secondbrain.core.model.Memory
+import com.kareem.secondbrain.core.model.SearchHit
+import com.kareem.secondbrain.core.model.SearchRequest
 import com.kareem.secondbrain.domain.AskAnswer
 import com.kareem.secondbrain.domain.AskClaim
 import com.kareem.secondbrain.domain.AskEvidence
@@ -40,18 +43,26 @@ class GroundedAskRepository(
             )
         }
 
-        val searchRequest = AskQueryPlanner.plan(normalizedQuestion, clock).copy(limit = SEARCH_LIMIT)
-        val hits = searchRepository.search(searchRequest)
-        val bestPerMemory = linkedMapOf<String, com.kareem.secondbrain.core.model.SearchHit>()
-        for (hit in hits) {
-            bestPerMemory.putIfAbsent(hit.memoryId, hit)
-            if (bestPerMemory.size >= MAX_EVIDENCE_MEMORIES) break
-        }
-
         val globalCloudEnabled = runCatching { cloudAiEnabled() }.getOrDefault(false)
+        val plan = AskQueryPlanner.plan(
+            question = normalizedQuestion,
+            clock = clock,
+            aiProvider = aiProvider,
+            allowModelPlanning = globalCloudEnabled,
+        )
+        val hits = retrieveAcrossPlan(plan)
+        val candidates = hits.mapNotNull { hit ->
+            memoryRepository.getMemory(hit.memoryId)?.let { memory ->
+                val softHintBoost = if (memory.kind in plan.softKindHints) SOFT_KIND_HINT_BOOST else 0.0
+                AskCandidate(hit, memory, (hit.score + softHintBoost).coerceIn(0.0, 1.0))
+            }
+        }.sortedByDescending(AskCandidate::score)
+            .take(MAX_EVIDENCE_MEMORIES)
+
         val evidence = mutableListOf<AskEvidence>()
-        for ((_, hit) in bestPerMemory) {
-            val memory = memoryRepository.getMemory(hit.memoryId) ?: continue
+        for (candidate in candidates) {
+            val hit = candidate.hit
+            val memory = candidate.memory
             val sourcePackage = memory.sourcePackage
             val policyAllowsCloud = sourcePackage == null || runCatching {
                 policyRepository.get(sourcePackage).allowAiUpload
@@ -72,7 +83,7 @@ class GroundedAskRepository(
                 sourcePackage = sourcePackage,
                 sourceLabel = sourcePackage ?: memory.kind.name,
                 occurredAt = memory.startedAt,
-                retrievalScore = hit.score.coerceIn(0.0, 1.0),
+                retrievalScore = candidate.score,
                 cloudEligible = globalCloudEnabled && policyAllowsCloud,
             )
         }
@@ -164,6 +175,43 @@ class GroundedAskRepository(
         )
     }
 
+    /**
+     * Execute several interpretations without allowing any one interpretation to exclude the others.
+     * Per-query search remains deterministic; results are fused by memory ID with reciprocal rank.
+     */
+    private suspend fun retrieveAcrossPlan(plan: AskSearchPlan): List<SearchHit> {
+        val fused = linkedMapOf<String, FusedHit>()
+        plan.queries.forEach { query ->
+            val hits = searchRepository.search(
+                SearchRequest(
+                    query = query,
+                    from = plan.from,
+                    to = plan.to,
+                    limit = SEARCH_LIMIT,
+                ),
+            )
+            hits.forEachIndexed { index, hit ->
+                val current = fused.getOrPut(hit.memoryId) { FusedHit(bestHit = hit) }
+                current.reciprocalRank += 1.0 / (PLAN_RRF_K + index + 1.0)
+                current.queryMatches += 1
+                if (hit.score > current.bestHit.score) current.bestHit = hit
+            }
+        }
+        if (fused.isEmpty()) return emptyList()
+
+        val maxRrf = fused.values.maxOf(FusedHit::reciprocalRank).coerceAtLeast(1e-9)
+        return fused.values.map { item ->
+            val agreement = (item.queryMatches.toDouble() / plan.queries.size.coerceAtLeast(1)).coerceIn(0.0, 1.0)
+            val score = (
+                0.62 * (item.reciprocalRank / maxRrf) +
+                    0.28 * item.bestHit.score.coerceIn(0.0, 1.0) +
+                    0.10 * agreement
+                ).coerceIn(0.0, 1.0)
+            item.bestHit.copy(score = score)
+        }.sortedByDescending(SearchHit::score)
+            .take(SEARCH_LIMIT)
+    }
+
     private fun deterministicConfidence(
         evidence: List<AskEvidence>,
         claims: List<ValidatedClaim>,
@@ -190,8 +238,22 @@ class GroundedAskRepository(
         const val SEARCH_LIMIT = 24
         const val MAX_EVIDENCE_MEMORIES = 12
         const val MAX_EVIDENCE_CHARS = 1800
+        const val PLAN_RRF_K = 30.0
+        const val SOFT_KIND_HINT_BOOST = 0.04
     }
 }
+
+private data class FusedHit(
+    var bestHit: SearchHit,
+    var reciprocalRank: Double = 0.0,
+    var queryMatches: Int = 0,
+)
+
+private data class AskCandidate(
+    val hit: SearchHit,
+    val memory: Memory,
+    val score: Double,
+)
 
 internal data class ValidatedClaim(
     val claim: AskClaim,
