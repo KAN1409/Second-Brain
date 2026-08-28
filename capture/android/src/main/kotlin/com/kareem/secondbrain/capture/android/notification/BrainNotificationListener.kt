@@ -63,15 +63,26 @@ class BrainNotificationListener : NotificationListenerService() {
         serviceScope.launch {
             when (val result = captureRepository.ingest(command)) {
                 is CaptureResult.Stored -> {
-                    RelayRuntimeDiagnostics.markCaptured(command.packageName)
+                    val eventId = result.eventId
+                    RelayRuntimeDiagnostics.markCaptured(
+                        eventId = eventId,
+                        packageName = command.packageName,
+                        occurredAt = command.occurredAt,
+                        title = command.title ?: command.conversationTitle,
+                        preview = command.diagnosticPreview(),
+                    )
                     val filterDecision = NotificationNoiseClassifier.classify(noiseFacts)
-                    RelayRuntimeDiagnostics.markFilterDecision(command.packageName, filterDecision)
+                    RelayRuntimeDiagnostics.markFilterDecision(
+                        eventId = eventId,
+                        packageName = command.packageName,
+                        decision = filterDecision,
+                    )
 
                     if (filterDecision.state != RelayFilterState.DROP_CONFIRMED_NOISE) {
                         CortexConnectorClient.enqueueNotification(
                             applicationContext,
                             command,
-                            result.eventId,
+                            eventId,
                         )
                     }
                 }
@@ -85,6 +96,18 @@ class BrainNotificationListener : NotificationListenerService() {
             .invokeOnCompletion { serviceScope.cancel() }
         super.onDestroy()
     }
+}
+
+private fun CaptureCommand.Notification.diagnosticPreview(): String? {
+    val message = messages.lastOrNull()?.let { item ->
+        listOfNotNull(item.sender?.takeIf(String::isNotBlank), item.text.takeIf(String::isNotBlank))
+            .joinToString(": ")
+    }
+    return sequenceOf(message, expandedText, body, conversationTitle, title)
+        .filterNotNull()
+        .map { value -> value.replace(Regex("\\s+"), " ").trim() }
+        .firstOrNull(String::isNotBlank)
+        ?.take(240)
 }
 
 private fun StatusBarNotification.toNoiseFacts(command: CaptureCommand.Notification) = NotificationNoiseFacts(
