@@ -4,7 +4,7 @@ set -euo pipefail
 PACKAGE="com.kareem.secondbrain"
 EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v1.0-candidate-permanent.apk}"
+SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v1.0.0-permanent.apk}"
 INSTALLED_COPY="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/cortex-relay-installed-base.apk"
 
 fail() {
@@ -87,18 +87,21 @@ CURRENT_CERT="$(cert_of_apk "$INSTALLED_COPY")"
 echo "Installed signer OK: $CURRENT_CERT"
 
 echo
-echo "==> Build 2/5: Cortex Relay v1.0 combined candidate"
+echo "==> Build 2/5: Cortex Relay v1.0.0 final release"
 cd "$ROOT_DIR"
 ./gradlew \
   -Dorg.gradle.jvmargs='-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8' \
-  :app:assembleDebug \
+  :app:assembleRelease \
   --no-daemon \
   --no-configuration-cache \
   --max-workers=1 \
   --console=plain
 
-UNSIGNED_APK="$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-[ -f "$UNSIGNED_APK" ] || fail "Build completed but APK not found: $UNSIGNED_APK"
+UNSIGNED_APK="$ROOT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
+if [ ! -f "$UNSIGNED_APK" ]; then
+  UNSIGNED_APK="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
+fi
+[ -f "$UNSIGNED_APK" ] || fail "Build completed but release APK not found"
 
 echo
 echo "==> Sign 3/5: permanent Cortex Relay identity"
@@ -109,7 +112,7 @@ echo "Signed APK signer OK: $SIGNED_CERT"
 
 echo
 echo "==> Install 4/5: update-in-place only (NO UNINSTALL)"
-TMP_REMOTE="/data/local/tmp/Cortex-Relay-v1.0-candidate-permanent.apk"
+TMP_REMOTE="/data/local/tmp/Cortex-Relay-v1.0.0-permanent.apk"
 cat "$SIGNED_APK" | rish -c "cat > '$TMP_REMOTE'" || fail "Failed to stage APK in /data/local/tmp"
 INSTALL_OUT="$(rish -c "chmod 644 '$TMP_REMOTE'; pm install -r '$TMP_REMOTE'; rc=\$?; rm -f '$TMP_REMOTE'; exit \$rc" 2>&1)" || {
   printf '%s\n' "$INSTALL_OUT"
@@ -131,4 +134,4 @@ echo "Installed signer OK: $FINAL_CERT"
 echo "APK SHA-256: $(sha256sum "$SIGNED_APK" | awk '{print $1}')"
 echo "APK: $SIGNED_APK"
 echo
-echo "CORTEX_RELAY_V1_CANDIDATE_UPDATE_SUCCESS"
+echo "CORTEX_RELAY_V1_FINAL_UPDATE_SUCCESS"
