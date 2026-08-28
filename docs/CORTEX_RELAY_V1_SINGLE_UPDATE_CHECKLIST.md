@@ -4,11 +4,13 @@ This file is the source of truth for the next device release.
 
 ## Release rule
 
-Do **not** publish another device APK for intermediate progress. Development may happen in several commits, but the user receives **one update** only when every `RELEASE BLOCKER` below is green and the combined real-device acceptance test passes.
+Do **not** publish feature-by-feature device APKs for intermediate progress. Development may happen in several commits. Once implementation blockers **1–7** are code-complete and CI-green, produce **one combined v1.0 device candidate** containing all of them. Use that same candidate for blocker **8**, the combined real-device acceptance test. If blocker 8 passes, that candidate is the accepted v1.0 build; do not create another cosmetic rebuild merely to call it final.
+
+If the combined device test exposes a real blocker, keep it red, fix the blocker, and repeat only because the candidate failed acceptance — never because an individual sub-feature deserves its own APK.
 
 Status legend:
-- ✅ GREEN — implemented and validated enough to keep
-- ❌ RED — incomplete or not yet validated; blocks v1.0
+- ✅ GREEN — implemented and validated enough for its current gate
+- ❌ RED — incomplete or not yet validated; blocks v1.0 acceptance
 
 ## Already green
 
@@ -20,7 +22,7 @@ Status legend:
 - ✅ **Diagnostic accounting is explicit** — captured events, send attempts, ACKed deliveries, retry/failure incidents, and per-signal delivery accounting are exported.
 - ✅ **Update-in-place / permanent signer path works** — package remains `com.kareem.secondbrain`; permanent signer is preserved; installation uses `pm install -r`.
 
-## RELEASE BLOCKERS — all must become green before the next APK
+## IMPLEMENTATION BLOCKERS — 1–7 must be green before the combined device candidate
 
 - ❌ **1. Durable outbox across process death / reboot**
   - Persist undelivered delivery copies locally.
@@ -42,7 +44,7 @@ Status legend:
 - ❌ **4. Multi-account / conversation identity**
   - Resolve Android user/profile, notification key, shortcut/conversation metadata, Person metadata and available account hints into a stable source/conversation identity when Android exposes enough evidence.
   - Do not assume package name alone identifies an account.
-  - Validate with the user's two-WhatsApp-account scenario.
+  - Unit-test profile/account-scope separation before the candidate; validate the user's two-WhatsApp-account scenario in blocker 8.
 
 - ❌ **5. Rich evidence normalization + provenance**
   - Preserve full MessagingStyle message structure.
@@ -60,6 +62,8 @@ Status legend:
   - Personal priority/relevance remains Cortex's job.
   - App-specific nuisance rules are not milestones by themselves.
 
+## DEVICE ACCEPTANCE GATE — run once on the combined candidate
+
 - ❌ **8. One combined real-device acceptance test**
   - Cortex available: real WhatsApp message → captured → delivered → exact ACK / Cortex signal id.
   - Cortex unavailable: real message → captured → persists in durable outbox.
@@ -67,7 +71,7 @@ Status legend:
   - Restore Cortex → same pending signal delivers once logically and receives correlated ACK.
   - Updated notification does not create unrelated duplicate evidence.
   - New MessagingStyle message inside an updated notification is preserved as new evidence.
-  - Two WhatsApp accounts remain distinguishable where Android evidence permits.
+  - Two WhatsApp accounts remain distinguishable where Android evidence permits; if Android exposes no account discriminator, Relay must report that evidence is insufficient rather than invent an account identity.
   - Diagnostic report shows zero unexplained backlog/rejections and explains any retries per signal.
 
 ## Explicitly not required before v1.0
