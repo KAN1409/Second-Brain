@@ -8,7 +8,7 @@ PASSWORD_FILE="${SECOND_BRAIN_PASSWORD_FILE:-$HOME/.secondbrain-signing/password
 ALIAS="secondbrain"
 EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74"
 PACKAGE="com.kareem.secondbrain"
-OUT_APK="/sdcard/Download/Cortex-Relay-V1-v0.7.0-permanent.apk"
+OUT_APK="/sdcard/Download/Cortex-Relay-v0.8.0-permanent.apk"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -44,8 +44,6 @@ printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KS_PASS"
 printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KEY_PASS"
 unset PASSWORD_VALUE
 
-# Signing compatibility floor only. This does NOT change the app manifest minSdk.
-# It forces apksigner to emit both APK Signature Scheme v2 and v3 for update compatibility.
 "$APKSIGNER" sign \
   --ks "$KEYSTORE" \
   --ks-type PKCS12 \
