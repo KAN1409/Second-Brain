@@ -1,5 +1,7 @@
 package com.kareem.secondbrain.capture.android.connector
 
+import com.kareem.secondbrain.capture.android.notification.NotificationLifecycleState
+import com.kareem.secondbrain.capture.android.notification.NotificationMeaningfulChange
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +35,11 @@ data class RelayRecentSignal(
     val conversationTitle: String? = null,
     val messages: List<RelayMessageSnapshot> = emptyList(),
     val metadataJson: String? = null,
+    val logicalSignalId: String? = null,
+    val notificationIdentity: String? = null,
+    val lifecycleState: String? = null,
+    val updateSequence: Int? = null,
+    val signalType: String? = null,
     val filterState: RelayFilterState? = null,
     val filterReason: String? = null,
     val deliveryState: RelayDeliveryState = RelayDeliveryState.CAPTURED,
@@ -55,6 +62,11 @@ data class RelayDiagnosticSnapshot(
     val lowValueForwarded: Long = 0,
     val waiting: Int = 0,
     val failedRetries: Long = 0,
+    val lifecyclePosted: Long = 0,
+    val lifecycleUpdated: Long = 0,
+    val lifecycleRemoved: Long = 0,
+    val duplicateUpdatesSuppressed: Long = 0,
+    val machineChurnSuppressed: Long = 0,
     val connectionState: RelayConnectionState = RelayConnectionState.DISCONNECTED,
     val lastPackage: String? = null,
     val lastFilterState: RelayFilterState? = null,
@@ -82,6 +94,17 @@ object RelayRuntimeDiagnostics {
     private val mutableState = MutableStateFlow(RelayDiagnosticSnapshot())
     val state: StateFlow<RelayDiagnosticSnapshot> = mutableState.asStateFlow()
 
+    fun markLifecycle(state: NotificationLifecycleState, change: NotificationMeaningfulChange?) = update { current ->
+        current.copy(
+            lifecyclePosted = current.lifecyclePosted + if (state == NotificationLifecycleState.POSTED) 1 else 0,
+            lifecycleUpdated = current.lifecycleUpdated + if (state == NotificationLifecycleState.UPDATED) 1 else 0,
+            lifecycleRemoved = current.lifecycleRemoved + if (state == NotificationLifecycleState.REMOVED) 1 else 0,
+            duplicateUpdatesSuppressed = current.duplicateUpdatesSuppressed + if (change == NotificationMeaningfulChange.EXACT_DUPLICATE) 1 else 0,
+            machineChurnSuppressed = current.machineChurnSuppressed + if (change == NotificationMeaningfulChange.MACHINE_CHURN_ONLY) 1 else 0,
+            lastActivityAt = Instant.now(),
+        )
+    }
+
     fun markCaptured(
         eventId: String,
         packageName: String,
@@ -93,6 +116,11 @@ object RelayRuntimeDiagnostics {
         conversationTitle: String?,
         messages: List<RelayMessageSnapshot>,
         metadataJson: String?,
+        logicalSignalId: String? = null,
+        notificationIdentity: String? = null,
+        lifecycleState: String? = null,
+        updateSequence: Int? = null,
+        signalType: String? = null,
     ) = update { current ->
         val now = Instant.now()
         current.copy(
@@ -114,6 +142,11 @@ object RelayRuntimeDiagnostics {
                     conversationTitle = conversationTitle?.takeIf(String::isNotBlank),
                     messages = messages.takeLast(24),
                     metadataJson = metadataJson?.takeIf(String::isNotBlank),
+                    logicalSignalId = logicalSignalId,
+                    notificationIdentity = notificationIdentity,
+                    lifecycleState = lifecycleState,
+                    updateSequence = updateSequence,
+                    signalType = signalType,
                 ),
             ),
         )
@@ -154,7 +187,7 @@ object RelayRuntimeDiagnostics {
             recentSignals = mutate(current.recentSignals, eventId) { signal ->
                 signal.copy(
                     deliveryState = RelayDeliveryState.WAITING,
-                    deliveryDetail = "Queued for Cortex Local Bus V1",
+                    deliveryDetail = "Queued durably for Cortex Local Bus V1",
                     updatedAt = now,
                 )
             },
@@ -170,7 +203,7 @@ object RelayRuntimeDiagnostics {
             recentSignals = mutate(current.recentSignals, eventId) { signal ->
                 signal.copy(
                     deliveryState = RelayDeliveryState.SENT,
-                    deliveryDetail = "Sent to Cortex; waiting for correlated ACK",
+                    deliveryDetail = "Sent to Cortex; durable copy retained until correlated ACK",
                     sendAttempts = signal.sendAttempts + 1,
                     updatedAt = now,
                 )
