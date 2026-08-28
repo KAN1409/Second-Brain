@@ -5,7 +5,7 @@ EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b
 SIGNING_DIR="${SECOND_BRAIN_SIGNING_DIR:-$HOME/.secondbrain-signing}"
 KEYSTORE="${SECOND_BRAIN_KEYSTORE:-$SIGNING_DIR/second-brain-permanent.p12}"
 PASSWORD_FILE="${SECOND_BRAIN_SIGNING_PASSWORD_FILE:-$SIGNING_DIR/password.txt}"
-KEY_ALIAS="${SECOND_BRAIN_KEY_ALIAS:-secondbrain-permanent}"
+KEY_ALIAS="${SECOND_BRAIN_KEY_ALIAS:-secondbrain}"
 INPUT_APK="${1:-app/build/outputs/apk/debug/app-debug.apk}"
 OUTPUT_APK="${2:-/sdcard/Download/Second-Brain-device-permanent.apk}"
 
