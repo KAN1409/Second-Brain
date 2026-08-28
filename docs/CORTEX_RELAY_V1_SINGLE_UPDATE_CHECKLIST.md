@@ -57,13 +57,25 @@ Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) was installed and te
 - ✅ The two WhatsApp account/profile surfaces remained distinguishable: `source-profile_71b76bc2...` vs `source-profile_c8b7171f...`, with different conversation identities grounded in Android `shortcutId`.
 - ✅ No WhatsApp-specific text rule was added; the delivered child is recognized as a human message using structured/replyable Android conversation evidence.
 
+### Candidate 3 — durable outbox recovery persistence PASSED; final ACK completion pending
+
+Real-device durable-outbox test with Cortex deliberately disabled produced test token `RELAY_OUTBOX_011706`.
+
+- ✅ A real WhatsApp event remained pending while Cortex was unavailable.
+- ✅ Relay process was killed and restarted while Cortex remained unavailable.
+- ✅ After restart, diagnostic reported `waiting_or_in_flight = 1` and restored the exact pending wire event id `sb_ead59095-e7c7-4cbd-846f-90e948967a90` from durable storage.
+- ✅ The recovered process had zero new captured/sent events, confirming the pending item was restored rather than recaptured.
+- ✅ Cortex bind failure left the durable event retained rather than deleting it.
+- ⏳ Final post-Cortex-restore proof is still required: the exact same event id must receive a correlated ACK, waiting must return to zero, and no duplicate logical evidence may appear.
+
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
-- ✅ **1. Durable outbox across process death / reboot — implementation ready, device recovery test pending under gate 8**
+- ✅ **1. Durable outbox across process death / reboot — process-death recovery proven; final delivery completion pending under gate 8**
   - Undelivered delivery copies are persisted in a disk-backed outbox before send.
   - Pending entries are restored on process startup, boot/package-replace hooks and NotificationListener startup.
   - Entries are retired only after correlated Cortex ACK or explicit terminal rejection.
   - Retry/recovery preserves the same stored event id and `sb_<eventId>` wire id.
+  - Real-device process-death test restored exact event `sb_ead59095-e7c7-4cbd-846f-90e948967a90` while Cortex remained disabled.
   - Diagnostics expose exact `restored_pending_event_ids` for device acceptance.
 
 - ✅ **2. Notification lifecycle tracking — implementation + basic real-device behavior validated**
@@ -107,8 +119,8 @@ Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) was installed and te
 
 - ❌ **8. One combined real-device acceptance test**
   - ✅ Cortex available: real WhatsApp messages → exactly one useful `HUMAN_MESSAGE` child delivery each → correlated ACK / Cortex signal id; Android group summaries stayed local/filtered.
-  - ❌ Cortex unavailable: real message → captured → persists in durable outbox.
-  - ❌ Kill/restart Relay while Cortex unavailable → pending signal remains and the same restored event id is reported.
+  - ✅ Cortex unavailable: real message persisted in durable outbox and remained waiting.
+  - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_ead59095-e7c7-4cbd-846f-90e948967a90` was reported.
   - ❌ Restore Cortex → same pending signal delivers once logically and receives correlated ACK.
   - ✅ Updated/summary notification behavior tested so far does not create duplicate Cortex evidence for the WhatsApp cases exercised.
   - ❌ New MessagingStyle message inside an already-live updated notification still needs explicit real-device delta proof.
