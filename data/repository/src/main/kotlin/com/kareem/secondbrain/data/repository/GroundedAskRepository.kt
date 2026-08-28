@@ -88,9 +88,10 @@ class GroundedAskRepository(
         val cloudEvidence = evidence.filter(AskEvidence::cloudEligible)
         val blockedCount = evidence.size - cloudEvidence.size
         var providerUnavailable = false
-        val providerResponse = if (aiProvider != null && cloudEvidence.isNotEmpty()) {
+        val provider = aiProvider
+        val providerResponse = if (provider != null && cloudEvidence.isNotEmpty()) {
             runCatching {
-                aiProvider.answer(
+                provider.answer(
                     AiAnswerRequest(
                         question = normalizedQuestion,
                         evidence = cloudEvidence.map { item ->
@@ -140,7 +141,7 @@ class GroundedAskRepository(
                 "I found relevant memories, but their app policies keep them local. Showing the evidence without cloud synthesis."
             providerUnavailable ->
                 "I found relevant memories, but cloud synthesis is unavailable. Showing the evidence only."
-            aiProvider == null ->
+            provider == null ->
                 "I found relevant memories. Cloud synthesis is not configured, so I'm showing evidence only."
             else ->
                 "I found relevant memories, but no fully supported answer survived evidence validation."
