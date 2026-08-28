@@ -1,5 +1,6 @@
 package com.kareem.secondbrain.app
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +49,7 @@ internal fun RelayDashboardScreen(
     onUsageAccess: () -> Unit,
 ) {
     val diagnostics by RelayRuntimeDiagnostics.state.collectAsState()
+    val context = LocalContext.current
     val scroll = rememberScrollState()
 
     Column(
@@ -95,6 +98,13 @@ internal fun RelayDashboardScreen(
                 MetricRow("Low-value but forwarded", diagnostics.lowValueForwarded.toString())
                 MetricRow("Waiting / in-flight", diagnostics.waiting.toString())
                 MetricRow("Failed / retry events", diagnostics.failedRetries.toString())
+                OutlinedButton(
+                    onClick = {
+                        runCatching { RelayDiagnosticExporter.share(context, diagnostics) }
+                            .onFailure { error -> Toast.makeText(context, "Diagnostic export failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Export Relay diagnostic JSON") }
             }
         }
 
