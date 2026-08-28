@@ -5,6 +5,9 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -15,6 +18,7 @@ import javax.crypto.spec.GCMParameterSpec
 class GeminiApiKeyStore(context: Context) {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    private val cloudEnabled = MutableStateFlow(preferences.getBoolean(KEY_CLOUD_ENABLED, false))
 
     suspend fun save(apiKey: String) = withContext(Dispatchers.IO) {
         val normalized = apiKey.trim()
@@ -44,8 +48,22 @@ class GeminiApiKeyStore(context: Context) {
 
     suspend fun hasKey(): Boolean = !read().isNullOrBlank()
 
+    fun observeCloudEnabled(): StateFlow<Boolean> = cloudEnabled.asStateFlow()
+
+    fun isCloudEnabled(): Boolean = cloudEnabled.value
+
+    suspend fun setCloudEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        preferences.edit().putBoolean(KEY_CLOUD_ENABLED, enabled).apply()
+        cloudEnabled.value = enabled
+    }
+
     suspend fun clear() = withContext(Dispatchers.IO) {
-        preferences.edit().remove(KEY_CIPHERTEXT).remove(KEY_IV).apply()
+        preferences.edit()
+            .remove(KEY_CIPHERTEXT)
+            .remove(KEY_IV)
+            .remove(KEY_CLOUD_ENABLED)
+            .apply()
+        cloudEnabled.value = false
         val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
         if (keyStore.containsAlias(KEY_ALIAS)) keyStore.deleteEntry(KEY_ALIAS)
     }
@@ -71,6 +89,7 @@ class GeminiApiKeyStore(context: Context) {
         const val PREFERENCES = "gemini_credentials"
         const val KEY_CIPHERTEXT = "api_key_ciphertext"
         const val KEY_IV = "api_key_iv"
+        const val KEY_CLOUD_ENABLED = "cloud_ai_enabled"
         const val KEY_ALIAS = "secondbrain_gemini_api_key_v1"
         const val KEYSTORE_PROVIDER = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
