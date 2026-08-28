@@ -16,6 +16,7 @@ fail() {
 
 [ -f "$KEYSTORE" ] || fail "Permanent keystore not found: $KEYSTORE"
 [ -f "$PASSWORD_FILE" ] || fail "Signing password file not found: $PASSWORD_FILE"
+[ -s "$PASSWORD_FILE" ] || fail "Signing password file is empty: $PASSWORD_FILE"
 [ -f "$INPUT_APK" ] || fail "Input APK not found: $INPUT_APK"
 
 APKSIGNER="${APKSIGNER:-}"
@@ -30,12 +31,27 @@ fi
 mkdir -p "$(dirname "$OUTPUT_APK")"
 rm -f "$OUTPUT_APK" "$OUTPUT_APK.idsig"
 
+# apksigner may consume a password-file stream only once. Give keystore and key
+# password retrieval separate one-line files without exposing the password in argv.
+TMP_KS_PASS="$(mktemp)"
+TMP_KEY_PASS="$(mktemp)"
+cleanup() {
+  rm -f "$TMP_KS_PASS" "$TMP_KEY_PASS"
+}
+trap cleanup EXIT HUP INT TERM
+chmod 600 "$TMP_KS_PASS" "$TMP_KEY_PASS"
+PASSWORD_VALUE="$(tr -d '\r\n' < "$PASSWORD_FILE")"
+[ -n "$PASSWORD_VALUE" ] || fail "Signing password is empty after normalization"
+printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KS_PASS"
+printf '%s\n' "$PASSWORD_VALUE" > "$TMP_KEY_PASS"
+unset PASSWORD_VALUE
+
 "$APKSIGNER" sign \
   --ks "$KEYSTORE" \
   --ks-type PKCS12 \
   --ks-key-alias "$KEY_ALIAS" \
-  --ks-pass "file:$PASSWORD_FILE" \
-  --key-pass "file:$PASSWORD_FILE" \
+  --ks-pass "file:$TMP_KS_PASS" \
+  --key-pass "file:$TMP_KEY_PASS" \
   --v1-signing-enabled false \
   --v2-signing-enabled true \
   --v3-signing-enabled true \
