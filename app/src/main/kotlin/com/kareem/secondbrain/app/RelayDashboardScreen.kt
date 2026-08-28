@@ -22,13 +22,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kareem.secondbrain.capture.android.connector.RelayConnectionState
+import com.kareem.secondbrain.capture.android.connector.RelayDeliveryState
 import com.kareem.secondbrain.capture.android.connector.RelayFilterState
+import com.kareem.secondbrain.capture.android.connector.RelayRecentSignal
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+private val signalTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
 @Composable
 internal fun RelayDashboardScreen(
@@ -97,6 +104,34 @@ internal fun RelayDashboardScreen(
             }
         }
 
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Recent signals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = "Live process view · newest first · up to 12 shown",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (diagnostics.recentSignals.isEmpty()) {
+                    Text(
+                        text = "No notification signals captured in this process yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    diagnostics.recentSignals.take(12).forEachIndexed { index, signal ->
+                        RecentSignalRow(signal)
+                        if (index < diagnostics.recentSignals.take(12).lastIndex) {
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -143,8 +178,8 @@ internal fun RelayDashboardScreen(
 
         HorizontalDivider()
         Text(
-            text = "V1 delivery note: Forwarded means Android Messenger.send() accepted the event. " +
-                "Cortex Relay does not claim a per-signal ACK until the coordinated V2 protocol adds correlation and a durable outbox.",
+            text = "V1 delivery note: FORWARDED means Android Messenger.send() accepted the event. " +
+                "Recent Signals correlation is local Relay diagnostics only; it is not a Cortex per-signal ACK.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -155,6 +190,86 @@ internal fun RelayDashboardScreen(
         )
         Spacer(Modifier.height(8.dp))
     }
+}
+
+@Composable
+private fun RecentSignalRow(signal: RelayRecentSignal) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                text = formatSignalTime(signal),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = deliveryLabel(signal.deliveryState),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(
+            text = signal.packageName,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        signal.title?.let { title ->
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        signal.preview?.let { preview ->
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = "sb_${signal.eventId} · ${filterLabel(signal.filterState)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = signal.deliveryDetail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (signal.filterState != RelayFilterState.FORWARD && signal.filterReason != null) {
+            Text(
+                text = "Filter: ${signal.filterReason}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun formatSignalTime(signal: RelayRecentSignal): String =
+    signalTimeFormatter.format(signal.occurredAt.atZone(ZoneId.systemDefault()))
+
+private fun deliveryLabel(state: RelayDeliveryState): String = when (state) {
+    RelayDeliveryState.CAPTURED -> "CAPTURED"
+    RelayDeliveryState.WAITING -> "WAITING"
+    RelayDeliveryState.FORWARDED -> "FORWARDED"
+    RelayDeliveryState.FILTERED -> "FILTERED"
+    RelayDeliveryState.RETRYING -> "RETRYING"
+    RelayDeliveryState.FAILED -> "FAILED"
+}
+
+private fun filterLabel(state: RelayFilterState?): String = when (state) {
+    RelayFilterState.FORWARD -> "FORWARD"
+    RelayFilterState.LOW_VALUE -> "LOW_VALUE"
+    RelayFilterState.DROP_CONFIRMED_NOISE -> "DROP_CONFIRMED_NOISE"
+    null -> "FILTER_PENDING"
 }
 
 @Composable
