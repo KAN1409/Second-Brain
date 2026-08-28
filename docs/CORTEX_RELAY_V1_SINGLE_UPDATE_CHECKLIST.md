@@ -57,26 +57,30 @@ Candidate 3 (`versionCode 12`, `1.0.0-relay-v1-candidate3`) was installed and te
 - ✅ The two WhatsApp account/profile surfaces remained distinguishable: `source-profile_71b76bc2...` vs `source-profile_c8b7171f...`, with different conversation identities grounded in Android `shortcutId`.
 - ✅ No WhatsApp-specific text rule was added; the delivered child is recognized as a human message using structured/replyable Android conversation evidence.
 
-### Candidate 3 — durable outbox recovery persistence PASSED; final ACK completion pending
+### Candidate 3 — durable outbox end-to-end recovery PASSED
 
-Real-device durable-outbox test with Cortex deliberately disabled produced test token `RELAY_OUTBOX_011706`.
+Real-device durable-outbox acceptance was repeated with the corrected helper so the recovered Relay process was not force-stopped after Cortex restoration.
 
 - ✅ A real WhatsApp event remained pending while Cortex was unavailable.
 - ✅ Relay process was killed and restarted while Cortex remained unavailable.
-- ✅ After restart, diagnostic reported `waiting_or_in_flight = 1` and restored the exact pending wire event id `sb_ead59095-e7c7-4cbd-846f-90e948967a90` from durable storage.
-- ✅ The recovered process had zero new captured/sent events, confirming the pending item was restored rather than recaptured.
-- ✅ Cortex bind failure left the durable event retained rather than deleting it.
-- ⚠️ A later diagnostic was taken only after an extra manual Relay force-stop **after** Cortex had been restored. Relay runtime diagnostics are process-session state, so that later file reset `restored_pending_event_ids`, send/ACK counters and recent-signal evidence. It is therefore **inconclusive**, not evidence that the durable item was lost.
-- ⏳ Final post-Cortex-restore proof is still required in the **same recovered Relay process**: the exact same event id must receive a correlated ACK, waiting must return to zero, and no duplicate logical evidence may appear. Do not restart Relay/Cortex before saving that final diagnostic.
+- ✅ Before restoring Cortex, diagnostic reported `waiting_or_in_flight = 1` and restored exact pending wire event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` from durable storage.
+- ✅ That recovered process showed `captured = 0`, `send_attempts = 0`, `delivered_cortex_ack = 0`, proving the item was recovered rather than recaptured.
+- ✅ Cortex bind failures while disabled left the durable item retained; the pre-restore diagnostic recorded 10 retry/delivery incidents and the explicit retained-event bind-failure reason.
+- ✅ After Cortex was restored, the **same recovered Relay process** sent exactly one ingest attempt and received exactly one correlated Cortex ACK.
+- ✅ Final diagnostic reported `connection_state = CONNECTED`, `send_attempts = 1`, `delivered_cortex_ack = 1`, `rejected_by_cortex = 0`, and `waiting_or_in_flight = 0`.
+- ✅ Cortex accepted the recovered event as signal `7972`.
+- ✅ No new Relay capture occurred during completion (`captured = 0`), so recovery completion did not create a second logical evidence row in Relay.
+- ✅ Retry accounting is explained: repeated bind/retry incidents occurred only while Cortex was intentionally disabled; once Cortex returned, one send completed with one ACK and zero backlog.
 
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
-- ✅ **1. Durable outbox across process death / reboot — process-death recovery proven; final delivery completion pending under gate 8**
+- ✅ **1. Durable outbox across process death / reboot — end-to-end process-death recovery and final delivery proven**
   - Undelivered delivery copies are persisted in a disk-backed outbox before send.
   - Pending entries are restored on process startup, boot/package-replace hooks and NotificationListener startup.
   - Entries are retired only after correlated Cortex ACK or explicit terminal rejection.
   - Retry/recovery preserves the same stored event id and `sb_<eventId>` wire id.
-  - Real-device process-death test restored exact event `sb_ead59095-e7c7-4cbd-846f-90e948967a90` while Cortex remained disabled.
+  - Real-device process-death acceptance restored exact event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` while Cortex remained disabled, then delivered it after Cortex returned with correlated ACK / Cortex signal `7972`.
+  - Final recovered-process diagnostic showed one send attempt, one ACK, zero rejection and zero waiting backlog.
   - Diagnostics expose exact `restored_pending_event_ids` for device acceptance.
 
 - ✅ **2. Notification lifecycle tracking — implementation + basic real-device behavior validated**
@@ -121,13 +125,13 @@ Real-device durable-outbox test with Cortex deliberately disabled produced test 
 - ❌ **8. One combined real-device acceptance test**
   - ✅ Cortex available: real WhatsApp messages → exactly one useful `HUMAN_MESSAGE` child delivery each → correlated ACK / Cortex signal id; Android group summaries stayed local/filtered.
   - ✅ Cortex unavailable: real message persisted in durable outbox and remained waiting.
-  - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_ead59095-e7c7-4cbd-846f-90e948967a90` was reported.
-  - ❌ Restore Cortex → same pending signal delivers once logically and receives correlated ACK. Previous attempt is inconclusive because an extra Relay force-stop reset process-session diagnostics before the final report was saved.
+  - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_aaaa933a-3f78-405c-b07b-2a7a8caf5bd2` was reported.
+  - ✅ Restore Cortex → same recovered pending signal delivered with one ingest attempt, one correlated ACK, Cortex signal `7972`, and waiting returned to zero.
   - ✅ Updated/summary notification behavior tested so far does not create duplicate Cortex evidence for the WhatsApp cases exercised.
   - ❌ New MessagingStyle message inside an already-live updated notification still needs explicit real-device delta proof.
   - ✅ Two WhatsApp account/profile surfaces are proven distinguishable where Android evidence permits.
   - ✅ Confirmed Android group-summary/container noise remains local and does not consume Cortex delivery.
-  - ❌ Final diagnostic after recovery test must show zero unexplained backlog/rejections and explain any retries per signal.
+  - ✅ Final recovery diagnostic shows zero unexplained backlog/rejections; retry incidents are explained by Cortex being intentionally disabled during the test.
 
 ## Explicitly not required before v1.0
 
