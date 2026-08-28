@@ -80,11 +80,10 @@ class BrainNotificationListener : NotificationListenerService() {
         val analysis = NotificationSignalAnalyzer.analyze(facts, lifecycle)
         RelayRuntimeDiagnostics.markLifecycle(lifecycle.state, analysis.change)
 
-        // Exact repeats and deterministic machine-only churn are lifecycle observations, not new
-        // evidence. They are intentionally not inserted into long-term capture or sent to Cortex.
-        if (analysis.change == NotificationMeaningfulChange.EXACT_DUPLICATE ||
-            analysis.change == NotificationMeaningfulChange.MACHINE_CHURN_ONLY
-        ) return
+        // An exact repeat contains no new evidence and the repository would dedupe it anyway.
+        // Deterministic machine churn is different: retain it locally for forensics, then let the
+        // conservative noise gate suppress only its Cortex delivery.
+        if (analysis.change == NotificationMeaningfulChange.EXACT_DUPLICATE) return
 
         val enrichedCommand = baseCommand
             .withRelayAnalysis(analysis, lifecycle)
