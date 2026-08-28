@@ -7,6 +7,7 @@ import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import com.kareem.secondbrain.capture.android.connector.CortexConnectorClient
 import com.kareem.secondbrain.capture.android.connector.RelayFilterState
+import com.kareem.secondbrain.capture.android.connector.RelayMessageSnapshot
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.CaptureCommand
@@ -70,6 +71,17 @@ class BrainNotificationListener : NotificationListenerService() {
                         occurredAt = command.occurredAt,
                         title = command.title ?: command.conversationTitle,
                         preview = command.diagnosticPreview(),
+                        body = command.body,
+                        expandedText = command.expandedText,
+                        conversationTitle = command.conversationTitle,
+                        messages = command.messages.map { item ->
+                            RelayMessageSnapshot(
+                                sender = item.sender,
+                                text = item.text,
+                                occurredAt = item.timestamp,
+                            )
+                        },
+                        metadataJson = command.metadataJson,
                     )
                     val filterDecision = NotificationNoiseClassifier.classify(noiseFacts)
                     RelayRuntimeDiagnostics.markFilterDecision(
