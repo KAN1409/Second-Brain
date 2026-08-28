@@ -109,7 +109,7 @@ object CortexConnectorClient {
             }
             MSG_ERROR -> {
                 if (eventId.isEmpty()) {
-                    RelayRuntimeDiagnostics.markFailure(
+                    markFailureForPending(
                         listOf("Cortex Local Bus error", status, detail).filter { it.isNotBlank() }.joinToString(" · "),
                     )
                     resetBindingAndRetry()
@@ -136,21 +136,28 @@ object CortexConnectorClient {
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
+                val interrupted = inFlight
                 remote = null
                 endpointReady = false
                 inFlight = null
                 cancelAckTimeout()
+                if (interrupted != null) {
+                    RelayRuntimeDiagnostics.markRetry(
+                        interrupted.eventId,
+                        "Cortex disconnected before ACK; durable event retained for retry",
+                    )
+                }
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
                 scheduleReconnect()
             }
 
             override fun onBindingDied(name: ComponentName?) {
-                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus binding died")
+                markFailureForPending("Cortex Local Bus binding died; durable event retained")
                 resetBindingAndRetry()
             }
 
             override fun onNullBinding(name: ComponentName?) {
-                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus returned a null binding")
+                markFailureForPending("Cortex Local Bus returned a null binding; durable event retained")
                 resetBindingAndRetry()
             }
         }
@@ -231,7 +238,7 @@ object CortexConnectorClient {
             if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
                 bindActive.set(false)
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus bind was rejected")
+                markFailureForPending("Cortex Local Bus bind was rejected; durable event retained")
                 scheduleReconnect()
             }
         } catch (t: Throwable) {
@@ -240,7 +247,7 @@ object CortexConnectorClient {
             remote = null
             endpointReady = false
             RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-            RelayRuntimeDiagnostics.markFailure("Cortex bind failed: ${t.javaClass.simpleName}")
+            markFailureForPending("Cortex bind failed: ${t.javaClass.simpleName}; durable event retained")
             scheduleReconnect()
         }
     }
@@ -257,7 +264,7 @@ object CortexConnectorClient {
             target.send(message)
         } catch (t: Throwable) {
             Log.w(TAG, "Cortex hello failed: ${t.javaClass.simpleName}")
-            RelayRuntimeDiagnostics.markFailure("Cortex hello failed: ${t.javaClass.simpleName}")
+            markFailureForPending("Cortex hello failed: ${t.javaClass.simpleName}; durable event retained")
             resetBindingAndRetry()
         }
     }
@@ -387,6 +394,15 @@ object CortexConnectorClient {
         val context = appContext
         if (bindActive.getAndSet(false) && context != null) runCatching { context.unbindService(connection) }
         scheduleReconnect()
+    }
+
+    private fun markFailureForPending(reason: String) {
+        val pending = inFlight ?: synchronized(queueLock) { queue.peekFirst() }
+        if (pending != null) {
+            RelayRuntimeDiagnostics.markRetry(pending.eventId, reason)
+        } else {
+            RelayRuntimeDiagnostics.markFailure(reason)
+        }
     }
 
     private fun scheduleReconnect() {
