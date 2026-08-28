@@ -48,7 +48,10 @@ object CortexConnectorClient {
     private const val KEY_CAPABILITIES_JSON = "capabilities_json"
     private const val KEY_EVENT_JSON = "event_json"
 
-    private data class PendingEvent(val raw: String)
+    private data class PendingEvent(
+        val eventId: String,
+        val raw: String,
+    )
 
     private val queueLock: Any = Any()
     private val queue: ArrayDeque<PendingEvent> = ArrayDeque()
@@ -122,19 +125,21 @@ object CortexConnectorClient {
 
     fun enqueueNotification(context: Context, command: CaptureCommand.Notification, storedEventId: String) {
         val raw = buildNotificationEvent(command, storedEventId).toString()
-        var overflowed = false
+        var dropped: PendingEvent? = null
         val waiting = synchronized(queueLock) {
             while (queue.size >= MAX_PENDING) {
-                queue.removeFirst()
-                overflowed = true
+                dropped = queue.removeFirst()
                 Log.w(TAG, "Tunnel queue full; dropped oldest delivery copy (local capture retained)")
             }
-            queue.addLast(PendingEvent(raw))
+            queue.addLast(PendingEvent(eventId = storedEventId, raw = raw))
             queue.size
         }
-        RelayRuntimeDiagnostics.markWaiting(waiting)
-        if (overflowed) {
-            RelayRuntimeDiagnostics.markFailure("V1 queue overflow; oldest delivery copy dropped, local capture retained")
+        RelayRuntimeDiagnostics.markQueued(storedEventId, waiting)
+        dropped?.let { event ->
+            RelayRuntimeDiagnostics.markDroppedDeliveryCopy(
+                eventId = event.eventId,
+                reason = "V1 queue overflow; delivery copy dropped, local capture retained",
+            )
         }
         appContext = context.applicationContext
         ensureBound(context.applicationContext)
@@ -203,10 +208,11 @@ object CortexConnectorClient {
                     }
                     // In V1 this means Messenger.send() accepted the event. It is deliberately not
                     // represented as a correlated ACK; that belongs to the coordinated V2 protocol.
-                    RelayRuntimeDiagnostics.markForwarded(waiting)
+                    RelayRuntimeDiagnostics.markForwarded(pending.eventId, waiting)
                 } catch (t: Throwable) {
-                    Log.w(TAG, "Cortex send failed: ${t.javaClass.simpleName}")
-                    RelayRuntimeDiagnostics.markFailure("Cortex send failed: ${t.javaClass.simpleName}")
+                    val reason = "Cortex send failed: ${t.javaClass.simpleName}; retry scheduled"
+                    Log.w(TAG, reason)
+                    RelayRuntimeDiagnostics.markRetry(pending.eventId, reason)
                     resetBindingAndRetry()
                     return
                 }
