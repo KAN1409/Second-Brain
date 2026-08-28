@@ -23,6 +23,57 @@ class NotificationNoiseClassifierTest {
     }
 
     @Test
+    fun ongoingAndroidMediaTransportControlIsConfirmedNoise() {
+        val decision = NotificationNoiseClassifier.classify(
+            NotificationNoiseFacts(
+                packageName = "com.google.android.apps.youtube.music",
+                title = "Song title",
+                body = "Artist name",
+                expandedText = null,
+                isOngoing = true,
+                category = "transport",
+                channelId = "playback",
+            ),
+        )
+
+        assertEquals(RelayFilterState.DROP_CONFIRMED_NOISE, decision.state)
+    }
+
+    @Test
+    fun usefulYoutubeMusicNotificationIsStillForwarded() {
+        val decision = NotificationNoiseClassifier.classify(
+            NotificationNoiseFacts(
+                packageName = "com.google.android.apps.youtube.music",
+                title = "Download complete",
+                body = "Your playlist is ready offline",
+                expandedText = null,
+                isOngoing = false,
+                category = "status",
+                channelId = "downloads",
+            ),
+        )
+
+        assertEquals(RelayFilterState.FORWARD, decision.state)
+    }
+
+    @Test
+    fun nonOngoingTransportNotificationIsNotDestroyed() {
+        val decision = NotificationNoiseClassifier.classify(
+            NotificationNoiseFacts(
+                packageName = "com.example.player",
+                title = "Playback stopped",
+                body = "Tap to resume",
+                expandedText = null,
+                isOngoing = false,
+                category = "transport",
+                channelId = "playback",
+            ),
+        )
+
+        assertEquals(RelayFilterState.FORWARD, decision.state)
+    }
+
+    @Test
     fun uncertainPersistentSystemUiStateIsLowValueButPreserved() {
         val decision = NotificationNoiseClassifier.classify(
             NotificationNoiseFacts(
