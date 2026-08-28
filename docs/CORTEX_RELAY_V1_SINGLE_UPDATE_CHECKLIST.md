@@ -66,7 +66,8 @@ Real-device durable-outbox test with Cortex deliberately disabled produced test 
 - ✅ After restart, diagnostic reported `waiting_or_in_flight = 1` and restored the exact pending wire event id `sb_ead59095-e7c7-4cbd-846f-90e948967a90` from durable storage.
 - ✅ The recovered process had zero new captured/sent events, confirming the pending item was restored rather than recaptured.
 - ✅ Cortex bind failure left the durable event retained rather than deleting it.
-- ⏳ Final post-Cortex-restore proof is still required: the exact same event id must receive a correlated ACK, waiting must return to zero, and no duplicate logical evidence may appear.
+- ⚠️ A later diagnostic was taken only after an extra manual Relay force-stop **after** Cortex had been restored. Relay runtime diagnostics are process-session state, so that later file reset `restored_pending_event_ids`, send/ACK counters and recent-signal evidence. It is therefore **inconclusive**, not evidence that the durable item was lost.
+- ⏳ Final post-Cortex-restore proof is still required in the **same recovered Relay process**: the exact same event id must receive a correlated ACK, waiting must return to zero, and no duplicate logical evidence may appear. Do not restart Relay/Cortex before saving that final diagnostic.
 
 ## IMPLEMENTATION / ACCEPTANCE BLOCKERS
 
@@ -121,7 +122,7 @@ Real-device durable-outbox test with Cortex deliberately disabled produced test 
   - ✅ Cortex available: real WhatsApp messages → exactly one useful `HUMAN_MESSAGE` child delivery each → correlated ACK / Cortex signal id; Android group summaries stayed local/filtered.
   - ✅ Cortex unavailable: real message persisted in durable outbox and remained waiting.
   - ✅ Kill/restart Relay while Cortex unavailable: pending signal survived and exact restored event `sb_ead59095-e7c7-4cbd-846f-90e948967a90` was reported.
-  - ❌ Restore Cortex → same pending signal delivers once logically and receives correlated ACK.
+  - ❌ Restore Cortex → same pending signal delivers once logically and receives correlated ACK. Previous attempt is inconclusive because an extra Relay force-stop reset process-session diagnostics before the final report was saved.
   - ✅ Updated/summary notification behavior tested so far does not create duplicate Cortex evidence for the WhatsApp cases exercised.
   - ❌ New MessagingStyle message inside an already-live updated notification still needs explicit real-device delta proof.
   - ✅ Two WhatsApp account/profile surfaces are proven distinguishable where Android evidence permits.
