@@ -99,12 +99,18 @@ internal fun RelayDashboardScreen(
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("This session", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 MetricRow("Captured", diagnostics.captured.toString())
-                MetricRow("Sent to Cortex", diagnostics.sent.toString())
+                MetricRow("Send attempts", diagnostics.sent.toString())
                 MetricRow("Delivered to Cortex", diagnostics.forwarded.toString())
                 MetricRow("Rejected by Cortex", diagnostics.rejected.toString())
                 MetricRow("Filtered as confirmed noise", diagnostics.filtered.toString())
                 MetricRow("Waiting / in flight", diagnostics.waiting.toString())
                 MetricRow("Retries / delivery issues", diagnostics.failedRetries.toString())
+                if (diagnostics.lifecycleUpdated > 0 || diagnostics.lifecycleRemoved > 0) {
+                    MetricRow(
+                        "Lifecycle P / U / R",
+                        "${diagnostics.lifecyclePosted} / ${diagnostics.lifecycleUpdated} / ${diagnostics.lifecycleRemoved}",
+                    )
+                }
                 OutlinedButton(
                     onClick = {
                         runCatching { RelayDiagnosticExporter.share(context, diagnostics) }
@@ -204,6 +210,16 @@ private fun RecentSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
         signal.preview?.let { preview ->
             Text(text = preview, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
+        signal.signalType?.let { type ->
+            Text(
+                text = buildString {
+                    append(humanSignalType(type))
+                    signal.lifecycleState?.let { lifecycle -> append(" · ").append(humanLifecycle(lifecycle)) }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
                 text = formatSignalTime(signal.occurredAt),
@@ -241,6 +257,16 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            signal.signalType?.let { DetailRow("Type", humanSignalType(it)) }
+            signal.lifecycleState?.let { lifecycle ->
+                DetailRow(
+                    "Lifecycle",
+                    buildString {
+                        append(humanLifecycle(lifecycle))
+                        signal.updateSequence?.let { append(" · update #").append(it) }
+                    },
+                )
+            }
             signal.title?.let { DetailSection("From / title", it) }
             signal.conversationTitle?.takeIf { it != signal.title }?.let { DetailSection("Conversation", it) }
 
@@ -293,6 +319,10 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
                         Text("Technical details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         DetailRow("Package", signal.packageName)
                         DetailRow("Relay event", "sb_${signal.eventId}")
+                        signal.logicalSignalId?.let { DetailRow("Logical signal", it) }
+                        signal.notificationIdentity?.let { DetailRow("Notification identity", it) }
+                        DetailRow("Send attempts", signal.sendAttempts.toString())
+                        DetailRow("Delivery issues", signal.deliveryIssueIncidents.toString())
                         DetailRow("Protocol", "CORTEX_INGEST_V1 / Local Bus V1")
                         DetailRow("Captured", signal.capturedAt.toString())
                         DetailRow("Last updated", signal.updatedAt.toString())
@@ -336,6 +366,8 @@ private fun friendlyAppName(packageName: String): String = when (packageName) {
     "com.samsung.android.dialer" -> "Phone"
     "com.android.systemui" -> "Android System"
     "com.samsung.android.app.smartcapture" -> "Samsung Capture"
+    "com.openai.chatgpt" -> "ChatGPT"
+    "com.google.android.apps.youtube.music" -> "YouTube Music"
     else -> packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() }
 }
 
@@ -355,6 +387,29 @@ private fun humanFilterLabel(state: RelayFilterState?): String = when (state) {
     RelayFilterState.LOW_VALUE -> "Low-value, still send"
     RelayFilterState.DROP_CONFIRMED_NOISE -> "Keep locally, do not send"
     null -> "Not decided yet"
+}
+
+private fun humanSignalType(type: String): String = when (type) {
+    "HUMAN_MESSAGE" -> "Message"
+    "EMAIL" -> "Email"
+    "CALL" -> "Call"
+    "SMS" -> "SMS"
+    "OTP" -> "Verification code"
+    "BANKING" -> "Banking"
+    "DELIVERY" -> "Delivery"
+    "CALENDAR" -> "Calendar"
+    "SECURITY" -> "Security"
+    "DOWNLOAD" -> "Download"
+    "SYSTEM_NOISE" -> "System state"
+    "OTHER" -> "Other"
+    else -> type.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+}
+
+private fun humanLifecycle(state: String): String = when (state) {
+    "POSTED" -> "New notification"
+    "UPDATED" -> "Notification update"
+    "REMOVED" -> "Removed"
+    else -> state.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
 }
 
 private fun cortexResponseLabel(status: String?): String = when (status) {
