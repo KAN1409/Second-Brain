@@ -28,6 +28,15 @@
                 android:name="androidx.work.WorkManagerInitializer"
                 tools:node="remove" />
         </provider>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diagnostic.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/relay_diagnostic_file_paths" />
+        </provider>
         <activity
             android:name="com.kareem.secondbrain.app.ShareReceiverActivity"
             android:exported="true">
