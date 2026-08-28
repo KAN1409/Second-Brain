@@ -22,8 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Optional one-way live tunnel into Cortex.
  *
- * Second Brain remains authoritative for capture. Events are offered to Cortex only after local
- * storage succeeds, and connector failure can never roll back or block that local capture.
+ * Relay remains authoritative for capture. Events are offered to Cortex only after local storage
+ * succeeds, and connector failure can never roll back or block that local capture.
  *
  * Wire compatibility is intentionally frozen at Local Bus V1 / CORTEX_INGEST_V1.
  */
@@ -75,10 +75,16 @@ object CortexConnectorClient {
 
     private val replies: Messenger = Messenger(Handler(Looper.getMainLooper()) { message ->
         when (message.what) {
-            // V1 ACK/ERROR messages are intentionally accepted without changing the wire contract.
-            // V1 has no required per-event correlation field, so send acceptance remains the queue
-            // removal point. A future protocol revision can add durable ACK correlation explicitly.
-            MSG_ACK, MSG_ERROR -> true
+            MSG_ACK -> {
+                // V1 ACK has no required per-event correlation field. It proves endpoint response,
+                // not delivery of a specific queued signal.
+                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTED)
+                true
+            }
+            MSG_ERROR -> {
+                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus V1 returned an uncorrelated error")
+                true
+            }
             else -> false
         }
     })
@@ -89,20 +95,26 @@ object CortexConnectorClient {
                 remote = service?.let(::Messenger)
                 retryAttempt.set(0)
                 mainHandler.removeCallbacks(retryRunnable)
+                RelayRuntimeDiagnostics.markConnection(
+                    if (remote != null) RelayConnectionState.CONNECTED else RelayConnectionState.DISCONNECTED,
+                )
                 sendHello()
                 drain()
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
                 remote = null
+                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
                 scheduleReconnect()
             }
 
             override fun onBindingDied(name: ComponentName?) {
+                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus binding died")
                 resetBindingAndRetry()
             }
 
             override fun onNullBinding(name: ComponentName?) {
+                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus returned a null binding")
                 resetBindingAndRetry()
             }
         }
@@ -110,12 +122,19 @@ object CortexConnectorClient {
 
     fun enqueueNotification(context: Context, command: CaptureCommand.Notification, storedEventId: String) {
         val raw = buildNotificationEvent(command, storedEventId).toString()
-        synchronized(queueLock) {
+        var overflowed = false
+        val waiting = synchronized(queueLock) {
             while (queue.size >= MAX_PENDING) {
                 queue.removeFirst()
+                overflowed = true
                 Log.w(TAG, "Tunnel queue full; dropped oldest delivery copy (local capture retained)")
             }
             queue.addLast(PendingEvent(raw))
+            queue.size
+        }
+        RelayRuntimeDiagnostics.markWaiting(waiting)
+        if (overflowed) {
+            RelayRuntimeDiagnostics.markFailure("V1 queue overflow; oldest delivery copy dropped, local capture retained")
         }
         appContext = context.applicationContext
         ensureBound(context.applicationContext)
@@ -124,18 +143,23 @@ object CortexConnectorClient {
 
     private fun ensureBound(context: Context) {
         if (remote != null || !bindActive.compareAndSet(false, true)) return
+        RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)
         try {
             val intent = Intent(ACTION_BIND).apply {
                 component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE)
             }
             if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
                 bindActive.set(false)
+                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
+                RelayRuntimeDiagnostics.markFailure("Cortex Local Bus bind was rejected")
                 scheduleReconnect()
             }
         } catch (t: Throwable) {
             Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")
             bindActive.set(false)
             remote = null
+            RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
+            RelayRuntimeDiagnostics.markFailure("Cortex bind failed: ${t.javaClass.simpleName}")
             scheduleReconnect()
         }
     }
@@ -152,6 +176,7 @@ object CortexConnectorClient {
             target.send(message)
         } catch (t: Throwable) {
             Log.w(TAG, "Cortex hello failed: ${t.javaClass.simpleName}")
+            RelayRuntimeDiagnostics.markFailure("Cortex hello failed: ${t.javaClass.simpleName}")
             resetBindingAndRetry()
         }
     }
@@ -172,11 +197,16 @@ object CortexConnectorClient {
                     message.replyTo = replies
                     message.data = Bundle().apply { putString(KEY_EVENT_JSON, pending.raw) }
                     target.send(message)
-                    synchronized(queueLock) {
+                    val waiting = synchronized(queueLock) {
                         if (queue.peekFirst() === pending) queue.removeFirst()
+                        queue.size
                     }
+                    // In V1 this means Messenger.send() accepted the event. It is deliberately not
+                    // represented as a correlated ACK; that belongs to the coordinated V2 protocol.
+                    RelayRuntimeDiagnostics.markForwarded(waiting)
                 } catch (t: Throwable) {
                     Log.w(TAG, "Cortex send failed: ${t.javaClass.simpleName}")
+                    RelayRuntimeDiagnostics.markFailure("Cortex send failed: ${t.javaClass.simpleName}")
                     resetBindingAndRetry()
                     return
                 }
@@ -189,6 +219,7 @@ object CortexConnectorClient {
 
     private fun resetBindingAndRetry() {
         remote = null
+        RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
         val context = appContext
         if (bindActive.getAndSet(false) && context != null) {
             runCatching { context.unbindService(connection) }

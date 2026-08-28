@@ -1,9 +1,13 @@
 package com.kareem.secondbrain.capture.android.notification
 
 import android.app.Notification
+import android.app.Person
 import android.service.notification.NotificationListenerService
+import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import com.kareem.secondbrain.capture.android.connector.CortexConnectorClient
+import com.kareem.secondbrain.capture.android.connector.RelayFilterState
+import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CaptureHealthRepository
@@ -50,14 +54,27 @@ class BrainNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!captureRunning || sbn.packageName == packageName) return
-        val command = sbn.toCaptureCommand()
+
+        val ranking = Ranking()
+        val importance = if (currentRanking.getRanking(sbn.key, ranking)) ranking.importance else null
+        val command = sbn.toCaptureCommand(importance)
+        val noiseFacts = sbn.toNoiseFacts(command)
+
         serviceScope.launch {
             when (val result = captureRepository.ingest(command)) {
-                is CaptureResult.Stored -> CortexConnectorClient.enqueueNotification(
-                    applicationContext,
-                    command,
-                    result.eventId,
-                )
+                is CaptureResult.Stored -> {
+                    RelayRuntimeDiagnostics.markCaptured(command.packageName)
+                    val filterDecision = NotificationNoiseClassifier.classify(noiseFacts)
+                    RelayRuntimeDiagnostics.markFilterDecision(command.packageName, filterDecision)
+
+                    if (filterDecision.state != RelayFilterState.DROP_CONFIRMED_NOISE) {
+                        CortexConnectorClient.enqueueNotification(
+                            applicationContext,
+                            command,
+                            result.eventId,
+                        )
+                    }
+                }
                 else -> Unit
             }
         }
@@ -70,33 +87,93 @@ class BrainNotificationListener : NotificationListenerService() {
     }
 }
 
-private fun StatusBarNotification.toCaptureCommand(): CaptureCommand.Notification {
+private fun StatusBarNotification.toNoiseFacts(command: CaptureCommand.Notification) = NotificationNoiseFacts(
+    packageName = packageName,
+    title = command.title,
+    body = command.body,
+    expandedText = command.expandedText,
+    isOngoing = isOngoing,
+    category = notification.category,
+    channelId = notification.channelId,
+)
+
+private fun StatusBarNotification.toCaptureCommand(importance: Int?): CaptureCommand.Notification {
     val extras = notification.extras
-    val messages = Notification.MessagingStyle.Message
+    val rawMessages = Notification.MessagingStyle.Message
         .getMessagesFromBundleArray(extras.getParcelableArray(Notification.EXTRA_MESSAGES))
-        .mapNotNull { message ->
-            val text = message.text?.toString()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            CaptureCommand.NotificationMessage(
-                sender = message.senderPerson?.name?.toString(),
-                text = text,
-                timestamp = message.timestamp.takeIf { it > 0L }?.let(Instant::ofEpochMilli),
-            )
-        }
+
+    val messages = rawMessages.mapNotNull { message ->
+        val text = message.text?.toString()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        CaptureCommand.NotificationMessage(
+            sender = message.senderPerson?.name?.toString(),
+            text = text,
+            timestamp = message.timestamp.takeIf { it > 0L }?.let(Instant::ofEpochMilli),
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    val people = extras.getParcelableArrayList<Person>(Notification.EXTRA_PEOPLE_LIST).orEmpty()
+    val actions = notification.actions.orEmpty()
+    val replyable = actions.any { action ->
+        action.remoteInputs.orEmpty().any { remoteInput -> remoteInput.allowFreeFormInput }
+    }
 
     val metadata = JSONObject().apply {
         put("id", id)
         put("tag", tag ?: JSONObject.NULL)
+        put("uid", uid)
+        put("androidUserId", user.identifier)
         put("groupKey", groupKey ?: JSONObject.NULL)
+        put("overrideGroupKey", overrideGroupKey ?: JSONObject.NULL)
         put("isGroup", isGroup)
         put("isOngoing", isOngoing)
+        put("isClearable", isClearable)
         put("category", notification.category ?: JSONObject.NULL)
         put("channelId", notification.channelId ?: JSONObject.NULL)
-        put("messages", JSONArray().apply {
-            messages.forEach { message ->
+        put("shortcutId", notification.shortcutId ?: JSONObject.NULL)
+        put("sortKey", notification.sortKey ?: JSONObject.NULL)
+        put("group", notification.group ?: JSONObject.NULL)
+        put("importance", importance ?: JSONObject.NULL)
+        put("flags", notification.flags)
+        put("notificationWhen", notification.`when`)
+        put("postTime", postTime)
+        put("replyable", replyable)
+        put("actions", JSONArray().apply {
+            actions.forEach { action ->
                 put(JSONObject().apply {
-                    put("sender", message.sender ?: JSONObject.NULL)
-                    put("text", message.text)
-                    put("timestamp", message.timestamp?.toEpochMilli() ?: JSONObject.NULL)
+                    put("title", action.title?.toString() ?: JSONObject.NULL)
+                    put("semanticAction", action.semanticAction)
+                    put("contextual", action.isContextual)
+                    put("remoteInputCount", action.remoteInputs.orEmpty().size)
+                    put("replyable", action.remoteInputs.orEmpty().any { it.allowFreeFormInput })
+                })
+            }
+        })
+        put("people", JSONArray().apply {
+            people.forEach { person ->
+                put(JSONObject().apply {
+                    put("name", person.name?.toString() ?: JSONObject.NULL)
+                    put("key", person.key ?: JSONObject.NULL)
+                    put("uri", person.uri ?: JSONObject.NULL)
+                    put("bot", person.isBot)
+                    put("important", person.isImportant)
+                })
+            }
+        })
+        put("messages", JSONArray().apply {
+            rawMessages.forEach { message ->
+                val text = message.text?.toString()?.takeIf { it.isNotBlank() } ?: return@forEach
+                val sender = message.senderPerson
+                put(JSONObject().apply {
+                    put("sender", sender?.name?.toString() ?: JSONObject.NULL)
+                    put("senderKey", sender?.key ?: JSONObject.NULL)
+                    put("senderUri", sender?.uri ?: JSONObject.NULL)
+                    put("senderBot", sender?.isBot ?: false)
+                    put("senderImportant", sender?.isImportant ?: false)
+                    put("text", text)
+                    put("timestamp", message.timestamp.takeIf { it > 0L } ?: JSONObject.NULL)
+                    put("dataMimeType", message.dataMimeType ?: JSONObject.NULL)
+                    put("dataUri", message.dataUri?.toString() ?: JSONObject.NULL)
                 })
             }
         })

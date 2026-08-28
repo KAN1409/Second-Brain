@@ -16,7 +16,7 @@
     <application
         android:name="com.kareem.secondbrain.app.SecondBrainApplication"
         android:allowBackup="false"
-        android:label="Second Brain"
+        android:label="Cortex Relay"
         android:supportsRtl="true"
         android:theme="@style/Theme.SecondBrain">
         <provider
