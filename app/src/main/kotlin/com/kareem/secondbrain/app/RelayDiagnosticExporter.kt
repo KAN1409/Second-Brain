@@ -76,7 +76,11 @@ internal object RelayDiagnosticExporter {
                     put("event_id", signal.eventId)
                     put("wire_event_id", "sb_${signal.eventId}")
                     put("logical_signal_id", signal.logicalSignalId ?: JSONObject.NULL)
+                    put("source_profile_identity", signal.sourceProfileIdentity ?: JSONObject.NULL)
                     put("notification_identity", signal.notificationIdentity ?: JSONObject.NULL)
+                    put("notification_instance_identity", signal.notificationInstanceIdentity ?: JSONObject.NULL)
+                    put("conversation_identity", signal.conversationIdentity ?: JSONObject.NULL)
+                    put("conversation_identity_basis", signal.conversationIdentityBasis ?: JSONObject.NULL)
                     put("lifecycle_state", signal.lifecycleState ?: JSONObject.NULL)
                     put("update_sequence", signal.updateSequence ?: JSONObject.NULL)
                     put("signal_type", signal.signalType ?: JSONObject.NULL)
@@ -84,8 +88,8 @@ internal object RelayDiagnosticExporter {
                     put("captured_at", signal.capturedAt.toString())
                     put("updated_at", signal.updatedAt.toString())
                     put("source_package", signal.packageName)
-                    // Diagnostic export intentionally omits title/body/message content. The IDs and
-                    // provenance metadata are sufficient to validate lifecycle and delivery behavior.
+                    // Diagnostic export intentionally omits title/body/message content. Stable
+                    // normalized identities plus delivery/lifecycle state are enough for device acceptance.
                     put("filter_state", signal.filterState?.name ?: JSONObject.NULL)
                     put("filter_reason", signal.filterReason ?: JSONObject.NULL)
                     put("delivery_state", signal.deliveryState.name)
