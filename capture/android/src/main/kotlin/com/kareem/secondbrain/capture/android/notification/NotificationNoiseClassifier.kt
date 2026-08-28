@@ -18,7 +18,7 @@ data class NotificationNoiseFacts(
  * LOW_VALUE is diagnostic only in V1 and is still forwarded to Cortex.
  */
 object NotificationNoiseClassifier {
-    private val percentage = Regex("\\b(?:100|[1-9]?\\d)%\\b")
+    private val percentage = Regex("(?<!\\d)(?:100|[1-9]?\\d)%(?!\\d)")
     private val chargingMarkers = listOf("charging", "charge", "شحن", "الشحن")
 
     fun classify(facts: NotificationNoiseFacts): RelayFilterDecision {
