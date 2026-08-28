@@ -7,7 +7,7 @@ import java.time.Instant
 
 enum class RelayConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
 enum class RelayFilterState { FORWARD, LOW_VALUE, DROP_CONFIRMED_NOISE }
-enum class RelayDeliveryState { CAPTURED, WAITING, FORWARDED, FILTERED, RETRYING, FAILED }
+enum class RelayDeliveryState { CAPTURED, WAITING, SENT, FORWARDED, FILTERED, RETRYING, REJECTED, FAILED }
 
 data class RelayFilterDecision(
     val state: RelayFilterState,
@@ -26,11 +26,16 @@ data class RelayRecentSignal(
     val filterReason: String? = null,
     val deliveryState: RelayDeliveryState = RelayDeliveryState.CAPTURED,
     val deliveryDetail: String = "Stored locally",
+    val cortexStatus: String? = null,
+    val cortexSignalId: Long = 0,
 )
 
 data class RelayDiagnosticSnapshot(
     val captured: Long = 0,
+    val sent: Long = 0,
+    /** Number of events explicitly ACKed as accepted by Cortex. */
     val forwarded: Long = 0,
+    val rejected: Long = 0,
     val filtered: Long = 0,
     val lowValueForwarded: Long = 0,
     val waiting: Int = 0,
@@ -40,6 +45,9 @@ data class RelayDiagnosticSnapshot(
     val lastFilterState: RelayFilterState? = null,
     val lastFilterReason: String? = null,
     val lastError: String? = null,
+    val lastCortexStatus: String? = null,
+    val lastCortexSignalId: Long = 0,
+    val lastAckAt: Instant? = null,
     val lastActivityAt: Instant? = null,
     val recentSignals: List<RelayRecentSignal> = emptyList(),
 )
@@ -48,8 +56,9 @@ data class RelayDiagnosticSnapshot(
  * Process-local operational telemetry for the Relay UI.
  *
  * This is deliberately not personal memory and is not part of the Cortex wire protocol. Counters
- * and recent signals reset when the app process restarts. Durable delivery/accounting belongs to
- * the coordinated V2 outbox + correlated-ACK work.
+ * and recent signals reset when the app process restarts. Local Bus V1 already returns event_id,
+ * status and signal_id on ingest ACKs, so the V1 client can correlate delivery without changing the
+ * wire contract.
  */
 object RelayRuntimeDiagnostics {
     private const val MAX_RECENT_SIGNALS = 20
@@ -102,16 +111,10 @@ object RelayRuntimeDiagnostics {
                 signal.copy(
                     filterState = decision.state,
                     filterReason = decision.reason,
-                    deliveryState = if (decision.state == RelayFilterState.DROP_CONFIRMED_NOISE) {
-                        RelayDeliveryState.FILTERED
-                    } else {
-                        signal.deliveryState
-                    },
+                    deliveryState = if (decision.state == RelayFilterState.DROP_CONFIRMED_NOISE) RelayDeliveryState.FILTERED else signal.deliveryState,
                     deliveryDetail = if (decision.state == RelayFilterState.DROP_CONFIRMED_NOISE) {
                         "Stored locally; forwarding suppressed as confirmed noise"
-                    } else {
-                        signal.deliveryDetail
-                    },
+                    } else signal.deliveryDetail,
                     updatedAt = now,
                 )
             },
@@ -133,16 +136,58 @@ object RelayRuntimeDiagnostics {
         )
     }
 
-    fun markForwarded(eventId: String, waiting: Int) = update { current ->
+    fun markSentAwaitingAck(eventId: String, waiting: Int) = update { current ->
         val now = Instant.now()
         current.copy(
-            forwarded = current.forwarded + 1,
+            sent = current.sent + 1,
             waiting = waiting,
             lastActivityAt = now,
             recentSignals = mutate(current.recentSignals, eventId) { signal ->
                 signal.copy(
+                    deliveryState = RelayDeliveryState.SENT,
+                    deliveryDetail = "Sent to Cortex; waiting for correlated ACK",
+                    updatedAt = now,
+                )
+            },
+        )
+    }
+
+    fun markForwarded(eventId: String, waiting: Int, status: String, signalId: Long) = update { current ->
+        val now = Instant.now()
+        current.copy(
+            forwarded = current.forwarded + 1,
+            waiting = waiting,
+            lastCortexStatus = status,
+            lastCortexSignalId = signalId,
+            lastAckAt = now,
+            lastActivityAt = now,
+            recentSignals = mutate(current.recentSignals, eventId) { signal ->
+                signal.copy(
                     deliveryState = RelayDeliveryState.FORWARDED,
-                    deliveryDetail = "Messenger.send() accepted (V1; not correlated ACK)",
+                    deliveryDetail = "Cortex ACK: $status${if (signalId > 0) " · signal $signalId" else ""}",
+                    cortexStatus = status,
+                    cortexSignalId = signalId,
+                    updatedAt = now,
+                )
+            },
+        )
+    }
+
+    fun markRejected(eventId: String, waiting: Int, status: String, detail: String) = update { current ->
+        val now = Instant.now()
+        val reason = listOf(status, detail).filter(String::isNotBlank).joinToString(" · ")
+        current.copy(
+            rejected = current.rejected + 1,
+            waiting = waiting,
+            lastError = reason,
+            lastCortexStatus = status,
+            lastAckAt = now,
+            lastActivityAt = now,
+            recentSignals = mutate(current.recentSignals, eventId) { signal ->
+                signal.copy(
+                    deliveryState = RelayDeliveryState.REJECTED,
+                    deliveryDetail = "Cortex rejected delivery: $reason",
+                    cortexStatus = status,
                     updatedAt = now,
                 )
             },
@@ -187,6 +232,16 @@ object RelayRuntimeDiagnostics {
         current.copy(connectionState = state, lastActivityAt = Instant.now())
     }
 
+    fun markEndpointAck(status: String) = update { current ->
+        val now = Instant.now()
+        current.copy(
+            connectionState = RelayConnectionState.CONNECTED,
+            lastCortexStatus = status,
+            lastAckAt = now,
+            lastActivityAt = now,
+        )
+    }
+
     fun markFailure(reason: String) = update { current ->
         current.copy(
             failedRetries = current.failedRetries + 1,
@@ -195,15 +250,9 @@ object RelayRuntimeDiagnostics {
         )
     }
 
-    private fun upsert(
-        current: List<RelayRecentSignal>,
-        signal: RelayRecentSignal,
-    ): List<RelayRecentSignal> = buildList {
+    private fun upsert(current: List<RelayRecentSignal>, signal: RelayRecentSignal): List<RelayRecentSignal> = buildList {
         add(signal)
-        current.asSequence()
-            .filterNot { it.eventId == signal.eventId }
-            .take(MAX_RECENT_SIGNALS - 1)
-            .forEach(::add)
+        current.asSequence().filterNot { it.eventId == signal.eventId }.take(MAX_RECENT_SIGNALS - 1).forEach(::add)
     }
 
     private fun mutate(
@@ -218,8 +267,6 @@ object RelayRuntimeDiagnostics {
     }
 
     private inline fun update(transform: (RelayDiagnosticSnapshot) -> RelayDiagnosticSnapshot) {
-        synchronized(lock) {
-            mutableState.value = transform(mutableState.value)
-        }
+        synchronized(lock) { mutableState.value = transform(mutableState.value) }
     }
 }
