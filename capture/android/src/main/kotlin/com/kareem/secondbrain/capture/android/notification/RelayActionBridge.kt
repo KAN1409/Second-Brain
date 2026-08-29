@@ -15,6 +15,7 @@ import java.io.FileOutputStream
 import java.lang.ref.WeakReference
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 data class RelayActionRequest(
@@ -44,7 +45,7 @@ data class RelayActionResult(
     }
 }
 
-private enum class RuntimeActionKind { PENDING_INTENT, REPLY, DISMISS }
+private enum class RuntimeActionKind { PENDING_INTENT, REPLY, DISMISS, SNOOZE }
 
 private data class RuntimeCapability(
     val descriptor: RelayActionCapabilityDescriptor,
@@ -59,16 +60,17 @@ private data class RuntimeNotificationActions(
     val capabilities: Map<String, RuntimeCapability>,
 )
 
-/**
- * Runtime-only registry of Android action handles.
- *
- * PendingIntent/RemoteInput objects never enter Relay's durable evidence or wire payload. Cortex sees
- * only stable capability descriptors and can ask Relay to execute one of those currently live IDs.
- */
+/** Runtime-only Android action registry. PendingIntent objects never enter durable/wire evidence. */
 object RelayActionRuntimeRegistry {
     private const val MAX_INPUT_CHARS = 4_000
+    private const val SNOOZE_ONE_HOUR_MS = 60L * 60L * 1000L
+    private const val MAX_COMPLETED_REQUESTS = 256
     private val byLogicalSignal = ConcurrentHashMap<String, RuntimeNotificationActions>()
     private val logicalByNotificationKey = ConcurrentHashMap<String, MutableSet<String>>()
+    private val completedLock = Any()
+    private val completedRequests = object : LinkedHashMap<String, RelayActionResult>(MAX_COMPLETED_REQUESTS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RelayActionResult>?): Boolean = size > MAX_COMPLETED_REQUESTS
+    }
 
     fun register(
         service: NotificationListenerService,
@@ -79,65 +81,57 @@ object RelayActionRuntimeRegistry {
         val notification = sbn.notification
 
         notification.contentIntent?.let { contentIntent ->
-            val descriptor = descriptor(
-                logicalSignalId = logicalSignalId,
-                token = "content",
-                kind = "OPEN",
-                label = "Open",
-                semanticAction = null,
-                requiresText = false,
-                source = "Android Notification.contentIntent",
-            )
-            capabilities[descriptor.capabilityId] = RuntimeCapability(
-                descriptor = descriptor,
-                kind = RuntimeActionKind.PENDING_INTENT,
-                pendingIntent = contentIntent,
-            )
+            val descriptor = descriptor(logicalSignalId, "content", "OPEN", "Open", null, false, "Android Notification.contentIntent")
+            capabilities[descriptor.capabilityId] = RuntimeCapability(descriptor, RuntimeActionKind.PENDING_INTENT, contentIntent)
         }
 
         notification.actions.orEmpty().forEachIndexed { index, action ->
             val actionIntent = action.actionIntent ?: return@forEachIndexed
-            val freeFormInputs = action.remoteInputs.orEmpty().filter(RemoteInput::getAllowFreeFormInput).toTypedArray()
+            val freeFormInputs = action.remoteInputs.orEmpty().filter { it.allowFreeFormInput }.toTypedArray()
             val isReply = freeFormInputs.isNotEmpty()
             val kind = if (isReply) "REPLY" else semanticKind(action.semanticAction)
             val descriptor = descriptor(
-                logicalSignalId = logicalSignalId,
-                token = "action:$index:${action.semanticAction}:${action.title}",
-                kind = kind,
-                label = action.title?.toString(),
-                semanticAction = action.semanticAction,
-                requiresText = isReply,
-                source = "Android Notification.Action[$index]",
+                logicalSignalId,
+                "action:$index:${action.semanticAction}:${action.title}",
+                kind,
+                action.title?.toString(),
+                action.semanticAction,
+                isReply,
+                "Android Notification.Action[$index]",
             )
             capabilities[descriptor.capabilityId] = RuntimeCapability(
-                descriptor = descriptor,
-                kind = if (isReply) RuntimeActionKind.REPLY else RuntimeActionKind.PENDING_INTENT,
-                pendingIntent = actionIntent,
-                remoteInputs = freeFormInputs,
+                descriptor,
+                if (isReply) RuntimeActionKind.REPLY else RuntimeActionKind.PENDING_INTENT,
+                actionIntent,
+                freeFormInputs,
             )
         }
 
         if (sbn.isClearable) {
-            val descriptor = descriptor(
-                logicalSignalId = logicalSignalId,
-                token = "dismiss:${sbn.key}",
-                kind = "DISMISS",
-                label = "Dismiss",
-                semanticAction = null,
-                requiresText = false,
-                source = "Android NotificationListenerService.cancelNotification",
+            val dismiss = descriptor(
+                logicalSignalId,
+                "dismiss:${sbn.key}",
+                "DISMISS",
+                "Dismiss",
+                null,
+                false,
+                "Android NotificationListenerService.cancelNotification",
             )
-            capabilities[descriptor.capabilityId] = RuntimeCapability(
-                descriptor = descriptor,
-                kind = RuntimeActionKind.DISMISS,
+            capabilities[dismiss.capabilityId] = RuntimeCapability(dismiss, RuntimeActionKind.DISMISS)
+
+            val snooze = descriptor(
+                logicalSignalId,
+                "snooze-1h:${sbn.key}",
+                "SNOOZE_1H",
+                "Snooze 1 hour",
+                null,
+                false,
+                "Android NotificationListenerService.snoozeNotification",
             )
+            capabilities[snooze.capabilityId] = RuntimeCapability(snooze, RuntimeActionKind.SNOOZE)
         }
 
-        val entry = RuntimeNotificationActions(
-            notificationKey = sbn.key,
-            service = WeakReference(service),
-            capabilities = capabilities,
-        )
+        val entry = RuntimeNotificationActions(sbn.key, WeakReference(service), capabilities)
         byLogicalSignal[logicalSignalId] = entry
         logicalByNotificationKey.compute(sbn.key) { _, current ->
             (current ?: linkedSetOf()).apply { add(logicalSignalId) }
@@ -154,6 +148,12 @@ object RelayActionRuntimeRegistry {
         byLogicalSignal[logicalSignalId]?.capabilities?.values?.map { it.descriptor }.orEmpty()
 
     fun execute(context: Context, request: RelayActionRequest): RelayActionResult {
+        synchronized(completedLock) {
+            completedRequests[request.requestId]?.let { prior ->
+                return prior.copy(detail = "${prior.detail} · duplicate request_id returned without re-execution")
+            }
+        }
+
         val entry = byLogicalSignal[request.logicalSignalId]
             ?: return finish(context, request, "STALE_SIGNAL", "No live Android notification action registry exists for this logical signal")
         val capability = entry.capabilities[request.capabilityId]
@@ -174,6 +174,12 @@ object RelayActionRuntimeRegistry {
                     service.cancelNotification(entry.notificationKey)
                     RelayActionResult(request.requestId, request.logicalSignalId, request.capabilityId, "EXECUTED", "Android notification dismissed")
                 }
+                RuntimeActionKind.SNOOZE -> {
+                    val service = entry.service.get()
+                        ?: return finish(context, request, "STALE_SIGNAL", "Notification listener instance is no longer alive")
+                    service.snoozeNotification(entry.notificationKey, SNOOZE_ONE_HOUR_MS)
+                    RelayActionResult(request.requestId, request.logicalSignalId, request.capabilityId, "EXECUTED", "Android notification snoozed for one hour")
+                }
                 RuntimeActionKind.PENDING_INTENT -> {
                     val pending = capability.pendingIntent
                         ?: return finish(context, request, "STALE_CAPABILITY", "Android PendingIntent is unavailable")
@@ -189,10 +195,9 @@ object RelayActionRuntimeRegistry {
                 RuntimeActionKind.REPLY -> {
                     val pending = capability.pendingIntent
                         ?: return finish(context, request, "STALE_CAPABILITY", "Android reply PendingIntent is unavailable")
-                    val text = request.inputText.orEmpty()
                     val fillIn = Intent()
                     val results = Bundle().apply {
-                        capability.remoteInputs.forEach { input -> putCharSequence(input.resultKey, text) }
+                        capability.remoteInputs.forEach { input -> putCharSequence(input.resultKey, request.inputText.orEmpty()) }
                     }
                     RemoteInput.addResultsToIntent(capability.remoteInputs, fillIn, results)
                     pending.send(context, 0, fillIn)
@@ -205,7 +210,7 @@ object RelayActionRuntimeRegistry {
                     )
                 }
             }
-        } catch (t: PendingIntent.CanceledException) {
+        } catch (_: PendingIntent.CanceledException) {
             RelayActionResult(request.requestId, request.logicalSignalId, request.capabilityId, "STALE_CAPABILITY", "Android PendingIntent was cancelled")
         } catch (t: Throwable) {
             RelayActionResult(
@@ -216,6 +221,7 @@ object RelayActionRuntimeRegistry {
                 "${t.javaClass.simpleName}${t.message?.let { ": $it" }.orEmpty()}",
             )
         }
+        rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(result.success)
         return result
@@ -223,9 +229,14 @@ object RelayActionRuntimeRegistry {
 
     private fun finish(context: Context, request: RelayActionRequest, status: String, detail: String): RelayActionResult {
         val result = RelayActionResult(request.requestId, request.logicalSignalId, request.capabilityId, status, detail)
+        rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(false)
         return result
+    }
+
+    private fun rememberResult(result: RelayActionResult) {
+        synchronized(completedLock) { completedRequests[result.requestId] = result }
     }
 
     private fun descriptor(
