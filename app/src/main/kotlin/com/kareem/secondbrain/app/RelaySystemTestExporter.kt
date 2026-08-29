@@ -72,6 +72,10 @@ internal object RelaySystemTestExporter {
             put("rejected_by_cortex", diagnostics.rejected)
             put("filtered", diagnostics.filtered)
             put("waiting_or_in_flight", diagnostics.waiting)
+            put("restored_pending_count", diagnostics.restoredPendingEventIds.size)
+            put("restored_pending_event_ids", JSONArray().apply {
+                diagnostics.restoredPendingEventIds.forEach { eventId -> put("sb_$eventId") }
+            })
             put("delivery_issue_incidents", diagnostics.failedRetries)
             put("last_cortex_status", diagnostics.lastCortexStatus ?: JSONObject.NULL)
             put("last_cortex_signal_id", diagnostics.lastCortexSignalId)
