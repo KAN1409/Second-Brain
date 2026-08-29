@@ -6,6 +6,7 @@ import androidx.core.content.FileProvider
 import com.kareem.secondbrain.capture.android.connector.RelayDiagnosticSnapshot
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestReport
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestStatus
+import com.kareem.secondbrain.capture.android.connector.RelayV2OperationalMetrics
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -32,6 +33,7 @@ internal object RelaySystemTestExporter {
     }
 
     private fun build(report: RelaySystemTestReport, diagnostics: RelayDiagnosticSnapshot) = JSONObject().apply {
+        val v2 = RelayV2OperationalMetrics.snapshot()
         put("schema", report.schema)
         put("run_id", report.runId)
         put("started_at", report.startedAt.toString())
@@ -82,11 +84,28 @@ internal object RelaySystemTestExporter {
                 put("exact_duplicate_updates_suppressed", diagnostics.duplicateUpdatesSuppressed)
                 put("machine_churn_updates_suppressed", diagnostics.machineChurnSuppressed)
             })
+            put("v2_observability", JSONObject().apply {
+                put("negotiated_protocol", v2.negotiatedProtocol)
+                put("protocol_negotiated_at", v2.protocolNegotiatedAt?.toString() ?: JSONObject.NULL)
+                put("last_ack_latency_ms", v2.lastAckLatencyMs ?: JSONObject.NULL)
+                put("average_ack_latency_ms", v2.averageAckLatencyMs ?: JSONObject.NULL)
+                put("max_ack_latency_ms", v2.maxAckLatencyMs ?: JSONObject.NULL)
+                put("ack_latency_samples", v2.ackLatencySamples)
+                put("outbox_count", v2.outboxCount)
+                put("oldest_pending_age_ms", v2.oldestPendingAgeMs ?: JSONObject.NULL)
+                put("forensic_record_count", v2.forensicRecordCount)
+                put("forensic_bytes", v2.forensicBytes)
+                put("replay_runs", v2.replayRuns)
+                put("replay_failures", v2.replayFailures)
+                put("policy_version", v2.policyVersion)
+                put("action_requests", v2.actionRequests)
+                put("action_succeeded", v2.actionSucceeded)
+                put("action_failed", v2.actionFailed)
+                put("last_successful_delivery_at", v2.lastSuccessfulDeliveryAt?.toString() ?: JSONObject.NULL)
+                put("last_action_at", v2.lastActionAt?.toString() ?: JSONObject.NULL)
+            })
             put("recent_signal_evidence", JSONArray().apply {
                 diagnostics.recentSignals.take(20).forEach { signal ->
-                    // Deliberately omit title/body/message text. The report is for system/debug
-                    // review; package/identity/state are enough unless the user separately shares
-                    // a detailed signal diagnostic.
                     put(JSONObject().apply {
                         put("wire_event_id", "sb_${signal.eventId}")
                         put("source_package", signal.packageName)
