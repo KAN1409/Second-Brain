@@ -14,6 +14,7 @@ import com.kareem.secondbrain.capture.android.connector.RelaySystemTestStatus
 import com.kareem.secondbrain.capture.android.connector.RelayV2OperationalMetrics
 import com.kareem.secondbrain.capture.android.connector.RelayV2Protocol
 import com.kareem.secondbrain.capture.android.notification.BrainNotificationListener
+import com.kareem.secondbrain.capture.android.notification.RelayEvidenceIntelligence
 import com.kareem.secondbrain.capture.android.tile.CapturePauseTileService
 import com.kareem.secondbrain.capture.android.voice.PendingVoiceFile
 import com.kareem.secondbrain.capture.android.voice.VoiceRecordingService
@@ -115,6 +116,27 @@ internal object RelayAppWideSystemTest {
             else warn("Microphone permission is not granted", "Voice capture requires a user permission grant before device acceptance.")
         }
 
+        cases += execute("v2.evidence_intelligence_runtime", "V2/Evidence Intelligence") {
+            val stats = RelayEvidenceIntelligence.forContext(context).stats()
+            val observations = stats.optInt("observations", -1)
+            val entities = stats.optInt("entity_candidates", -1)
+            val episodes = stats.optInt("episodes", -1)
+            val crossAppEpisodes = stats.optInt("cross_app_episodes", -1)
+            val crossAppEntities = stats.optInt("cross_app_entity_candidates", -1)
+            if (observations >= 0 && entities >= 0 && episodes >= 0 && crossAppEpisodes >= 0 && crossAppEntities >= 0) {
+                pass(
+                    "Evidence Intelligence durable state is readable and bounded",
+                    "observations=$observations, episodes=$episodes, cross_app_episodes=$crossAppEpisodes, entities=$entities, cross_app_entities=$crossAppEntities",
+                )
+            } else fail("Evidence Intelligence state counters are invalid", stats.toString())
+        }
+
+        cases += needsRealEvent(
+            "real.cross_app_episode",
+            "Device acceptance",
+            "Real cross-app episode + grounded entity continuity",
+            "Open two apps within five minutes around one shared exact entity (for example the same order/reference/URL), then receive/capture related evidence and verify one cross-app episode and candidate with identity_claim=false.",
+        )
         cases += needsRealEvent(
             "real.accessibility_screen_capture",
             "Device acceptance",
@@ -167,6 +189,7 @@ internal object RelayAppWideSystemTest {
         val forensicEventIds = runCatching {
             RelayForensicBuffer.forContext(context).recent(100).mapTo(mutableSetOf()) { it.eventId }
         }.getOrDefault(emptySet())
+        val intelligenceStats = runCatching { RelayEvidenceIntelligence.forContext(context).stats() }.getOrNull()
 
         val deliveredRealNotification = diagnostics.recentSignals.firstOrNull { signal ->
             signal.deliveryState == RelayDeliveryState.FORWARDED &&
@@ -227,6 +250,17 @@ internal object RelayAppWideSystemTest {
                         test,
                         "Cortex selected Signal V2 and completed V2 data/control traffic",
                         "forwarded=${diagnostics.forwarded}, action_requests=${metrics.actionRequests}, policy_version=${metrics.policyVersion}",
+                    )
+                } else test
+
+                "real.cross_app_episode" -> if (
+                    (intelligenceStats?.optInt("cross_app_episodes", 0) ?: 0) > 0 &&
+                    (intelligenceStats?.optInt("cross_app_entity_candidates", 0) ?: 0) > 0
+                ) {
+                    promote(
+                        test,
+                        "Real cross-app episode and exact grounded entity continuity observed",
+                        "cross_app_episodes=${intelligenceStats?.optInt("cross_app_episodes")}, cross_app_entities=${intelligenceStats?.optInt("cross_app_entity_candidates")}",
                     )
                 } else test
 
