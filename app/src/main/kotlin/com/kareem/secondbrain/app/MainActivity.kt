@@ -29,6 +29,7 @@ import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestInput
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestRunner
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
+import com.kareem.secondbrain.core.database.BrainDatabase
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
@@ -43,6 +44,7 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
     @Inject lateinit var captureRepository: CaptureRepository
     @Inject lateinit var accessChecker: CaptureAccessChecker
+    @Inject lateinit var database: BrainDatabase
 
     private val accessSnapshotState = mutableStateOf(CaptureAccessSnapshot(false, false, false, false))
 
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             CortexRelayRoot(
                 captureRepository = captureRepository,
+                database = database,
                 access = accessSnapshotState.value,
                 openNotificationAccess = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                 openAccessibilityAccess = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
@@ -69,6 +72,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun CortexRelayRoot(
     captureRepository: CaptureRepository,
+    database: BrainDatabase,
     access: CaptureAccessSnapshot,
     openNotificationAccess: () -> Unit,
     openAccessibilityAccess: () -> Unit,
@@ -120,7 +124,7 @@ private fun CortexRelayRoot(
                         try {
                             val snapshot = RelayRuntimeDiagnostics.state.value
                             val report = withContext(Dispatchers.IO) {
-                                RelaySystemTestRunner.run(
+                                val base = RelaySystemTestRunner.run(
                                     context.applicationContext,
                                     RelaySystemTestInput(
                                         captureRunning = captureState.mode == CaptureMode.RUNNING,
@@ -129,6 +133,13 @@ private fun CortexRelayRoot(
                                         usageAccess = access.usageAccess,
                                         diagnostics = snapshot,
                                     ),
+                                )
+                                RelayAppWideSystemTest.augment(
+                                    context = context.applicationContext,
+                                    base = base,
+                                    database = database,
+                                    access = access,
+                                    captureState = captureState,
                                 )
                             }
                             RelaySystemTestExporter.share(
