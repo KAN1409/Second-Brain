@@ -4,7 +4,7 @@ set -euo pipefail
 PACKAGE="com.kareem.secondbrain"
 EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v1.0.0-permanent.apk}"
+SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v1.0.1-permanent.apk}"
 INSTALLED_COPY="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/cortex-relay-installed-base.apk"
 
 fail() {
@@ -87,7 +87,7 @@ CURRENT_CERT="$(cert_of_apk "$INSTALLED_COPY")"
 echo "Installed signer OK: $CURRENT_CERT"
 
 echo
-echo "==> Build 2/5: Cortex Relay v1.0.0 final release"
+echo "==> Build 2/5: Cortex Relay v1.0.1 source-label hotfix release"
 cd "$ROOT_DIR"
 ./gradlew \
   -Dorg.gradle.jvmargs='-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8' \
@@ -112,7 +112,7 @@ echo "Signed APK signer OK: $SIGNED_CERT"
 
 echo
 echo "==> Install 4/5: update-in-place only (NO UNINSTALL)"
-TMP_REMOTE="/data/local/tmp/Cortex-Relay-v1.0.0-permanent.apk"
+TMP_REMOTE="/data/local/tmp/Cortex-Relay-v1.0.1-permanent.apk"
 cat "$SIGNED_APK" | rish -c "cat > '$TMP_REMOTE'" || fail "Failed to stage APK in /data/local/tmp"
 INSTALL_OUT="$(rish -c "chmod 644 '$TMP_REMOTE'; pm install -r '$TMP_REMOTE'; rc=\$?; rm -f '$TMP_REMOTE'; exit \$rc" 2>&1)" || {
   printf '%s\n' "$INSTALL_OUT"
@@ -134,4 +134,4 @@ echo "Installed signer OK: $FINAL_CERT"
 echo "APK SHA-256: $(sha256sum "$SIGNED_APK" | awk '{print $1}')"
 echo "APK: $SIGNED_APK"
 echo
-echo "CORTEX_RELAY_V1_FINAL_UPDATE_SUCCESS"
+echo "CORTEX_RELAY_V1_0_1_HOTFIX_UPDATE_SUCCESS"
