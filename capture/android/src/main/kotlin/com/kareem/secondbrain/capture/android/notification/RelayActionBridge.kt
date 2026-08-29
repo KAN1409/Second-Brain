@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.kareem.secondbrain.capture.android.connector.RelayV2OperationalMetrics
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
+import com.kareem.secondbrain.capture.android.intelligence.observeGenericEvidence
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -224,6 +226,7 @@ object RelayActionRuntimeRegistry {
         rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(result.success)
+        recordIntelligenceOutcome(context, result)
         return result
     }
 
@@ -232,7 +235,27 @@ object RelayActionRuntimeRegistry {
         rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(false)
+        recordIntelligenceOutcome(context, result)
         return result
+    }
+
+    private fun recordIntelligenceOutcome(context: Context, result: RelayActionResult) {
+        runCatching {
+            RelayIntelligenceV3.forContext(context).observeGenericEvidence(
+                kind = "ACTION_RESULT",
+                sourcePackage = context.packageName,
+                text = null,
+                occurredAtEpochMs = result.executedAt.toEpochMilli(),
+                provenance = "Relay Action Bridge execution result",
+                metadata = JSONObject().apply {
+                    put("request_id", result.requestId)
+                    put("logical_signal_id", result.logicalSignalId)
+                    put("capability_id", result.capabilityId)
+                    put("status", result.status)
+                    put("success", result.success)
+                },
+            )
+        }
     }
 
     private fun rememberResult(result: RelayActionResult) {
