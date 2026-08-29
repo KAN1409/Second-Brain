@@ -13,6 +13,8 @@ import android.media.MediaRecorder
 import android.os.IBinder
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
+import com.kareem.secondbrain.capture.android.intelligence.observeGenericEvidence
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.AssetRepository
 import com.kareem.secondbrain.domain.CaptureCommand
@@ -27,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.time.Instant
@@ -154,15 +157,31 @@ class VoiceRecordingService : Service() {
 
         PendingVoiceFile.patchHeader(file)
         try {
+            val durationMs = PendingVoiceFile.durationMs(file)
             val asset = assets.importFile(
                 absolutePath = file.absolutePath,
                 mimeType = "audio/wav",
                 suggestedName = file.name,
-                durationMs = PendingVoiceFile.durationMs(file),
+                durationMs = durationMs,
                 moveSource = false,
             )
             when (val result = captureRepository.ingest(CaptureCommand.Voice(occurredAt = occurredAt, assetId = asset.id))) {
                 is CaptureResult.Stored -> {
+                    runCatching {
+                        RelayIntelligenceV3.forContext(applicationContext).observeGenericEvidence(
+                            kind = "VOICE",
+                            sourcePackage = packageName,
+                            text = null,
+                            occurredAtEpochMs = occurredAt.toEpochMilli(),
+                            provenance = "User-initiated Android AudioRecord capture",
+                            metadata = JSONObject().apply {
+                                put("event_id", result.eventId)
+                                put("asset_id", asset.id)
+                                put("duration_ms", durationMs)
+                                put("mime_type", "audio/wav")
+                            },
+                        )
+                    }
                     enrichmentScheduler.enqueueTranscription(result.eventId, asset.id)
                     file.delete()
                 }
