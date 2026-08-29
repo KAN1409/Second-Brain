@@ -2,13 +2,17 @@ package com.kareem.secondbrain.app
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.pm.PackageManager
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.kareem.secondbrain.capture.android.accessibility.BrainAccessibilityService
+import com.kareem.secondbrain.capture.android.connector.RelayDeliveryState
+import com.kareem.secondbrain.capture.android.connector.RelayForensicBuffer
+import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestCase
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestReport
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestStatus
+import com.kareem.secondbrain.capture.android.connector.RelayV2OperationalMetrics
+import com.kareem.secondbrain.capture.android.connector.RelayV2Protocol
 import com.kareem.secondbrain.capture.android.notification.BrainNotificationListener
 import com.kareem.secondbrain.capture.android.tile.CapturePauseTileService
 import com.kareem.secondbrain.capture.android.voice.PendingVoiceFile
@@ -35,6 +39,14 @@ internal object RelayAppWideSystemTest {
                 row == null -> pass(
                     "Room database is readable",
                     "capture_state has not been persisted yet; runtime default=${captureState.mode.name}",
+                )
+                row.notification_listener_connected && !access.notificationAccess -> warn(
+                    "Persisted notification-listener health was stale",
+                    "Android access is currently revoked while database connected=true. MainActivity reconciliation will clear it.",
+                )
+                row.accessibility_connected && !access.accessibilityAccess -> warn(
+                    "Persisted Accessibility health was stale",
+                    "Android access is currently revoked while database connected=true. MainActivity reconciliation will clear it.",
                 )
                 row.mode == captureState.mode.name -> pass(
                     "Room database and runtime capture state agree",
@@ -134,12 +146,100 @@ internal object RelayAppWideSystemTest {
             "Provide one image/screenshot through a supported user-initiated path and verify OCR/enrichment completes without changing the original evidence provenance.",
         )
 
-        val combined = base.cases + cases
+        val combined = adjudicateRuntimeEvidence(context, base.cases + cases)
         return base.copy(
             overallStatus = overallStatus(combined),
             cases = combined,
         )
     }
+
+    /**
+     * A NEEDS_REAL_EVENT case is a statement about missing proof, not a permanent status. When the
+     * current process contains enough grounded evidence from a real Android/Cortex interaction, the
+     * report promotes that exact case to PASS automatically. Anything not provable remains explicit.
+     */
+    private fun adjudicateRuntimeEvidence(
+        context: Context,
+        cases: List<RelaySystemTestCase>,
+    ): List<RelaySystemTestCase> {
+        val diagnostics = RelayRuntimeDiagnostics.state.value
+        val metrics = RelayV2OperationalMetrics.snapshot()
+        val forensicEventIds = runCatching {
+            RelayForensicBuffer.forContext(context).recent(100).mapTo(mutableSetOf()) { it.eventId }
+        }.getOrDefault(emptySet())
+
+        val deliveredRealNotification = diagnostics.recentSignals.firstOrNull { signal ->
+            signal.deliveryState == RelayDeliveryState.FORWARDED &&
+                signal.cortexSignalId > 0 &&
+                signal.eventId in forensicEventIds
+        }
+        val sourceProfiles = diagnostics.recentSignals
+            .mapNotNull { it.sourceProfileIdentity?.takeIf(String::isNotBlank) }
+            .distinct()
+        val liveDelta = diagnostics.recentSignals.firstOrNull { signal ->
+            signal.lifecycleState == "UPDATED" &&
+                (signal.updateSequence ?: 0) > 0 &&
+                signal.logicalSignalId?.startsWith("signal-message-delta_") == true &&
+                signal.messages.isNotEmpty()
+        }
+
+        return cases.map { test ->
+            if (test.status != RelaySystemTestStatus.NEEDS_REAL_EVENT) return@map test
+            when (test.id) {
+                "real.notification_listener" -> deliveredRealNotification?.let { signal ->
+                    promote(
+                        test,
+                        "Real NotificationListener capture -> forensic record -> Cortex ACK verified",
+                        "${signal.packageName} · ${signal.logicalSignalId} -> Cortex signal ${signal.cortexSignalId}",
+                    )
+                } ?: test
+
+                "real.multi_account" -> if (sourceProfiles.size >= 2) {
+                    promote(
+                        test,
+                        "Real distinct Android source/profile identities observed",
+                        "distinct_source_profiles=${sourceProfiles.size}",
+                    )
+                } else test
+
+                "real.live_message_delta" -> liveDelta?.let { signal ->
+                    promote(
+                        test,
+                        "Real live notification update produced a bounded new-message delta",
+                        "${signal.logicalSignalId} · update_sequence=${signal.updateSequence} · delta_messages=${signal.messages.size}",
+                    )
+                } ?: test
+
+                "real.action_execution" -> if (metrics.actionSucceeded > 0) {
+                    promote(
+                        test,
+                        "At least one real Cortex-authorized Android action succeeded",
+                        "requests=${metrics.actionRequests}, succeeded=${metrics.actionSucceeded}, failed=${metrics.actionFailed}",
+                    )
+                } else test
+
+                "real.v2_roundtrip" -> if (
+                    metrics.negotiatedProtocol == RelayV2Protocol.SIGNAL_PROTOCOL &&
+                    diagnostics.forwarded > 0 &&
+                    (metrics.actionRequests > 0 || metrics.policyVersion > 0)
+                ) {
+                    promote(
+                        test,
+                        "Cortex selected Signal V2 and completed V2 data/control traffic",
+                        "forwarded=${diagnostics.forwarded}, action_requests=${metrics.actionRequests}, policy_version=${metrics.policyVersion}",
+                    )
+                } else test
+
+                else -> test
+            }
+        }
+    }
+
+    private fun promote(test: RelaySystemTestCase, summary: String, detail: String) = test.copy(
+        status = RelaySystemTestStatus.PASS,
+        summary = summary,
+        detail = detail,
+    )
 
     @Suppress("DEPRECATION")
     private fun serviceDeclared(context: Context, clazz: Class<*>): Boolean = runCatching {
