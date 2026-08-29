@@ -4,12 +4,7 @@ import com.kareem.secondbrain.domain.CaptureCommand
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Grounded, generic semantic layer for Cortex Relay v2.
- *
- * This layer only reorganizes evidence that Android actually exposed. It deliberately does not
- * infer personal importance, relationships, intent, or whether the user should act.
- */
+/** Grounded generic semantic layer. It reorganizes Android evidence without personal inference. */
 data class RelayConversationContinuity(
     val conversationIdentity: String,
     val observationSequence: Long,
@@ -82,6 +77,7 @@ object RelayV2EvidenceBuilder {
             })
         }
 
+        put("android_context", androidContext(androidMetadata))
         put("content", JSONObject().apply {
             putNullable("title", command.title)
             putNullable("text", command.body)
@@ -113,10 +109,10 @@ object RelayV2EvidenceBuilder {
             }
         })
         put("actions", JSONArray().apply { actionCapabilities.forEach { put(actionJson(it)) } })
-        put("provenance", provenance(command, analysis, androidMetadata))
+        put("provenance", provenance(command, analysis, androidMetadata, actionCapabilities))
     }
 
-    /** Build a deterministic type-specific payload without adding facts not present in evidence. */
+    /** Type-specific payload containing only fields that already exist in Android evidence. */
     fun semanticPayload(command: CaptureCommand.Notification, analysis: NotificationSignalAnalysis): JSONObject {
         val entitiesByType = analysis.entities.groupBy { it.type }
         val base = JSONObject().apply {
@@ -168,7 +164,6 @@ object RelayV2EvidenceBuilder {
         return base
     }
 
-    /** Extract only attachment evidence explicitly exposed by MessagingStyle/data URI metadata. */
     fun attachmentEvidence(androidMetadata: JSONObject): JSONArray = JSONArray().apply {
         val messages = androidMetadata.optJSONArray("messages") ?: return@apply
         for (index in 0 until messages.length()) {
@@ -185,10 +180,31 @@ object RelayV2EvidenceBuilder {
         }
     }
 
+    private fun androidContext(metadata: JSONObject): JSONObject = JSONObject().apply {
+        copyIfPresent(metadata, this, "id")
+        copyIfPresent(metadata, this, "tag")
+        copyIfPresent(metadata, this, "uid")
+        copyIfPresent(metadata, this, "androidUserId")
+        copyIfPresent(metadata, this, "category")
+        copyIfPresent(metadata, this, "channelId")
+        copyIfPresent(metadata, this, "shortcutId")
+        copyIfPresent(metadata, this, "importance")
+        copyIfPresent(metadata, this, "groupKey")
+        copyIfPresent(metadata, this, "isGroup")
+        copyIfPresent(metadata, this, "isGroupSummary")
+        copyIfPresent(metadata, this, "isOngoing")
+        copyIfPresent(metadata, this, "isClearable")
+        copyIfPresent(metadata, this, "replyable")
+        copyIfPresent(metadata, this, "hasContentIntent")
+        put("people_count", metadata.optJSONArray("people")?.length() ?: 0)
+        put("android_action_count", metadata.optJSONArray("actions")?.length() ?: 0)
+    }
+
     private fun provenance(
         command: CaptureCommand.Notification,
         analysis: NotificationSignalAnalysis,
         metadata: JSONObject,
+        actions: List<RelayActionCapabilityDescriptor>,
     ): JSONArray = JSONArray().apply {
         listOf(
             "title" to command.title,
@@ -196,27 +212,42 @@ object RelayV2EvidenceBuilder {
             "expanded_text" to command.expandedText,
             "conversation_title" to command.conversationTitle,
         ).forEach { (field, value) ->
-            if (!value.isNullOrBlank()) put(JSONObject().apply {
-                put("field", field)
-                put("source", "Android Notification extras")
+            if (!value.isNullOrBlank()) put(provenanceItem(field, "Android Notification extras"))
+        }
+        if (command.messages.isNotEmpty()) put(provenanceItem("messages", "Android Notification.MessagingStyle"))
+        if ((metadata.optJSONArray("people")?.length() ?: 0) > 0) {
+            put(provenanceItem("people", "Android Notification.EXTRA_PEOPLE_LIST"))
+        }
+
+        listOf(
+            "category" to "Android Notification.category",
+            "channelId" to "Android Notification.channelId",
+            "shortcutId" to "Android Notification.shortcutId",
+            "importance" to "NotificationListenerService.Ranking.importance",
+            "groupKey" to "StatusBarNotification.groupKey",
+            "isGroupSummary" to "Android Notification.FLAG_GROUP_SUMMARY",
+            "replyable" to "Android Notification.Action RemoteInput",
+            "hasContentIntent" to "Android Notification.contentIntent",
+        ).forEach { (field, source) ->
+            if (metadata.has(field) && !metadata.isNull(field)) put(provenanceItem("android_context.$field", source))
+        }
+
+        if (attachmentEvidence(metadata).length() > 0) {
+            put(provenanceItem("attachments", "Android MessagingStyle.Message dataMimeType/dataUri"))
+        }
+        actions.forEach { action ->
+            put(JSONObject().apply {
+                put("field", "action:${action.capabilityId}")
+                put("source", action.source)
                 put("grounded", true)
+                put("derived", "Stable capability ID over live Android action evidence; executable handle remains runtime-only")
             })
         }
-        if (command.messages.isNotEmpty()) put(JSONObject().apply {
-            put("field", "messages")
-            put("source", "Android Notification.MessagingStyle")
-            put("grounded", true)
-        })
-        if (metadata.optJSONArray("people")?.length() ?: 0 > 0) put(JSONObject().apply {
-            put("field", "people")
-            put("source", "Android Notification.EXTRA_PEOPLE_LIST")
-            put("grounded", true)
-        })
         put(JSONObject().apply {
             put("field", "conversation_identity")
             put("source", analysis.conversationIdentityBasis)
             put("grounded", true)
-            put("derived", "deterministic hash over supplied Android identity evidence")
+            put("derived", "Deterministic hash over supplied Android identity evidence")
         })
         analysis.entities.forEach { entity ->
             put(JSONObject().apply {
@@ -227,6 +258,12 @@ object RelayV2EvidenceBuilder {
                 put("span_end_exclusive", entity.endExclusive)
             })
         }
+    }
+
+    private fun provenanceItem(field: String, source: String) = JSONObject().apply {
+        put("field", field)
+        put("source", source)
+        put("grounded", true)
     }
 
     private fun entityJson(entity: RelayEvidenceEntity) = JSONObject().apply {
@@ -255,6 +292,10 @@ object RelayV2EvidenceBuilder {
         raw?.takeIf(String::isNotBlank)?.let(::JSONObject) ?: JSONObject()
     } catch (_: Throwable) {
         JSONObject()
+    }
+
+    private fun copyIfPresent(source: JSONObject, target: JSONObject, key: String) {
+        if (source.has(key)) target.put(key, if (source.isNull(key)) JSONObject.NULL else source.opt(key))
     }
 
     private fun JSONObject.putNullable(key: String, value: Any?) {
