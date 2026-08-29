@@ -51,6 +51,7 @@ class BrainNotificationListener : NotificationListenerService() {
         lifecycleStore.pruneOlderThan(now - LIFECYCLE_RETENTION_MS)
         continuityStore.pruneOlderThan(now - CONTINUITY_RETENTION_MS)
         RelayForensicBuffer.forContext(applicationContext).prune(now)
+        RelayEvidenceIntelligence.forContext(applicationContext).stats()
         CortexConnectorClient.start(applicationContext)
         serviceScope.launch {
             captureRepository.observeCaptureState().collectLatest { state ->
@@ -89,8 +90,6 @@ class BrainNotificationListener : NotificationListenerService() {
         val analysis = NotificationSignalAnalyzer.analyze(facts, lifecycle)
         RelayRuntimeDiagnostics.markLifecycle(lifecycle.state, analysis.change)
 
-        // Exact snapshots do not contain new evidence. Other uncertain changes are preserved and
-        // pass through the conservative mechanical filtering/policy layer below.
         if (analysis.change == NotificationMeaningfulChange.EXACT_DUPLICATE) return
 
         val continuity = continuityStore.observe(
@@ -101,13 +100,15 @@ class BrainNotificationListener : NotificationListenerService() {
         val deltaCommand = baseCommand
             .withRelayAnalysis(analysis, lifecycle)
             .asMeaningfulDelta(analysis)
+        val intelligence = RelayEvidenceIntelligence.forContext(applicationContext)
+            .notificationEnvelope(deltaCommand, analysis, lifecycle)
         val enrichedCommand = RelayV2EvidenceBuilder.enrich(
             command = deltaCommand,
             analysis = analysis,
             lifecycle = lifecycle,
             continuity = continuity,
             actionCapabilities = actionCapabilities,
-        )
+        ).withEvidenceIntelligence(intelligence)
         val noiseFacts = sbn.toNoiseFacts(enrichedCommand, analysis)
 
         serviceScope.launch {
