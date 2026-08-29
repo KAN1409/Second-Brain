@@ -11,6 +11,7 @@ import com.kareem.secondbrain.capture.android.connector.RelayForensicBuffer
 import com.kareem.secondbrain.capture.android.connector.RelayMechanicalPolicyStore
 import com.kareem.secondbrain.capture.android.connector.RelayMessageSnapshot
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.CaptureCommand
 import com.kareem.secondbrain.domain.CaptureHealthRepository
@@ -38,6 +39,7 @@ class BrainNotificationListener : NotificationListenerService() {
     @Volatile private var captureRunning = false
     private lateinit var lifecycleStore: DurableNotificationLifecycleStore
     private lateinit var continuityStore: DurableConversationContinuityStore
+    private lateinit var intelligence: RelayIntelligenceV3
 
     override fun onCreate() {
         super.onCreate()
@@ -47,6 +49,7 @@ class BrainNotificationListener : NotificationListenerService() {
         continuityStore = DurableConversationContinuityStore(
             File(noBackupFilesDir, "cortex-relay-conversation-continuity-v2"),
         )
+        intelligence = RelayIntelligenceV3.forContext(applicationContext)
         val now = System.currentTimeMillis()
         lifecycleStore.pruneOlderThan(now - LIFECYCLE_RETENTION_MS)
         continuityStore.pruneOlderThan(now - CONTINUITY_RETENTION_MS)
@@ -101,13 +104,27 @@ class BrainNotificationListener : NotificationListenerService() {
         val deltaCommand = baseCommand
             .withRelayAnalysis(analysis, lifecycle)
             .asMeaningfulDelta(analysis)
-        val enrichedCommand = RelayV2EvidenceBuilder.enrich(
+        val v2Command = RelayV2EvidenceBuilder.enrich(
             command = deltaCommand,
             analysis = analysis,
             lifecycle = lifecycle,
             continuity = continuity,
             actionCapabilities = actionCapabilities,
         )
+        val v3Envelope = runCatching {
+            intelligence.observeNotification(
+                command = deltaCommand,
+                analysis = analysis,
+                lifecycle = lifecycle,
+                continuity = continuity,
+                actions = actionCapabilities,
+            )
+        }.onFailure { error ->
+            RelayRuntimeDiagnostics.markFailure(
+                "Intelligence V3 notification enrichment failed: ${error.javaClass.simpleName}; V2 delivery continues",
+            )
+        }.getOrNull()
+        val enrichedCommand = v2Command.withRelayIntelligenceV3(v3Envelope)
         val noiseFacts = sbn.toNoiseFacts(enrichedCommand, analysis)
 
         serviceScope.launch {
@@ -203,6 +220,17 @@ private data class NotificationObservation(
     val command: CaptureCommand.Notification,
     val facts: NotificationAnalysisFacts,
 )
+
+private fun CaptureCommand.Notification.withRelayIntelligenceV3(envelope: JSONObject?): CaptureCommand.Notification {
+    if (envelope == null) return this
+    val root = try {
+        metadataJson?.takeIf(String::isNotBlank)?.let(::JSONObject) ?: JSONObject()
+    } catch (_: Throwable) {
+        JSONObject()
+    }
+    root.put("relay_intelligence_v3", envelope)
+    return copy(metadataJson = root.toString())
+}
 
 private fun CaptureCommand.Notification.diagnosticPreview(): String? {
     val message = messages.lastOrNull()?.let { item ->
