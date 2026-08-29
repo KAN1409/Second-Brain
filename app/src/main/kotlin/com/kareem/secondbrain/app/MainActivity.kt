@@ -8,7 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -93,9 +93,9 @@ private fun CortexRelayRoot(
             onUsageAccess = openUsageAccess,
         )
 
-        ExtendedFloatingActionButton(
+        Button(
             onClick = {
-                if (testRunning) return@ExtendedFloatingActionButton
+                if (testRunning) return@Button
                 scope.launch {
                     testRunning = true
                     try {
@@ -123,7 +123,8 @@ private fun CortexRelayRoot(
                 }
             },
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
-            text = { Text(if (testRunning) "Testing…" else "Full system test") },
-        )
+        ) {
+            Text(if (testRunning) "Testing…" else "Full system test")
+        }
     }
 }
