@@ -13,8 +13,8 @@ android {
         applicationId = "com.kareem.secondbrain"
         minSdk = 30
         targetSdk = 37
-        versionCode = 21
-        versionName = "2.0.0-candidate2"
+        versionCode = 22
+        versionName = "2.0.0-candidate3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
