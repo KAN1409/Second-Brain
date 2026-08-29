@@ -7,6 +7,8 @@ import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.StatusBarNotification
 import com.kareem.secondbrain.capture.android.connector.CortexConnectorClient
 import com.kareem.secondbrain.capture.android.connector.RelayFilterState
+import com.kareem.secondbrain.capture.android.connector.RelayForensicBuffer
+import com.kareem.secondbrain.capture.android.connector.RelayMechanicalPolicyStore
 import com.kareem.secondbrain.capture.android.connector.RelayMessageSnapshot
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.core.model.CaptureMode
@@ -35,13 +37,20 @@ class BrainNotificationListener : NotificationListenerService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile private var captureRunning = false
     private lateinit var lifecycleStore: DurableNotificationLifecycleStore
+    private lateinit var continuityStore: DurableConversationContinuityStore
 
     override fun onCreate() {
         super.onCreate()
         lifecycleStore = DurableNotificationLifecycleStore(
             File(noBackupFilesDir, "cortex-relay-notification-lifecycle-v1"),
         )
-        lifecycleStore.pruneOlderThan(System.currentTimeMillis() - LIFECYCLE_RETENTION_MS)
+        continuityStore = DurableConversationContinuityStore(
+            File(noBackupFilesDir, "cortex-relay-conversation-continuity-v2"),
+        )
+        val now = System.currentTimeMillis()
+        lifecycleStore.pruneOlderThan(now - LIFECYCLE_RETENTION_MS)
+        continuityStore.pruneOlderThan(now - CONTINUITY_RETENTION_MS)
+        RelayForensicBuffer.forContext(applicationContext).prune(now)
         CortexConnectorClient.start(applicationContext)
         serviceScope.launch {
             captureRepository.observeCaptureState().collectLatest { state ->
@@ -80,14 +89,25 @@ class BrainNotificationListener : NotificationListenerService() {
         val analysis = NotificationSignalAnalyzer.analyze(facts, lifecycle)
         RelayRuntimeDiagnostics.markLifecycle(lifecycle.state, analysis.change)
 
-        // An exact repeat contains no new evidence and the repository would dedupe it anyway.
-        // Deterministic machine churn and Android group-summary containers are retained locally,
-        // then the conservative noise gate suppresses only their Cortex delivery.
+        // Exact snapshots do not contain new evidence. Other uncertain changes are preserved and
+        // pass through the conservative mechanical filtering/policy layer below.
         if (analysis.change == NotificationMeaningfulChange.EXACT_DUPLICATE) return
 
-        val enrichedCommand = baseCommand
+        val continuity = continuityStore.observe(
+            conversationIdentity = analysis.conversationIdentity,
+            atEpochMs = baseCommand.occurredAt.toEpochMilli(),
+        )
+        val actionCapabilities = RelayActionRuntimeRegistry.register(this, sbn, analysis.logicalSignalId)
+        val deltaCommand = baseCommand
             .withRelayAnalysis(analysis, lifecycle)
             .asMeaningfulDelta(analysis)
+        val enrichedCommand = RelayV2EvidenceBuilder.enrich(
+            command = deltaCommand,
+            analysis = analysis,
+            lifecycle = lifecycle,
+            continuity = continuity,
+            actionCapabilities = actionCapabilities,
+        )
         val noiseFacts = sbn.toNoiseFacts(enrichedCommand, analysis)
 
         serviceScope.launch {
@@ -121,12 +141,30 @@ class BrainNotificationListener : NotificationListenerService() {
                         updateSequence = lifecycle.sequence,
                         signalType = analysis.signalType.name,
                     )
-                    val filterDecision = NotificationNoiseClassifier.classify(noiseFacts)
+
+                    val baseFilterDecision = NotificationNoiseClassifier.classify(noiseFacts)
+                    val filterDecision = RelayMechanicalPolicyStore.forContext(applicationContext)
+                        .adjust(baseFilterDecision, noiseFacts)
                     RelayRuntimeDiagnostics.markFilterDecision(
                         eventId = eventId,
                         packageName = enrichedCommand.packageName,
                         decision = filterDecision,
                     )
+
+                    runCatching {
+                        RelayForensicBuffer.forContext(applicationContext).recordNotification(
+                            eventId = eventId,
+                            command = enrichedCommand,
+                            facts = facts,
+                            analysis = analysis,
+                            filterDecision = filterDecision,
+                            actionCapabilities = actionCapabilities,
+                        )
+                    }.onFailure { error ->
+                        RelayRuntimeDiagnostics.markFailure(
+                            "Forensic buffer write failed: ${error.javaClass.simpleName}; capture/delivery continues",
+                        )
+                    }
 
                     if (filterDecision.state != RelayFilterState.DROP_CONFIRMED_NOISE) {
                         CortexConnectorClient.enqueueNotification(
@@ -142,6 +180,7 @@ class BrainNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        RelayActionRuntimeRegistry.unregisterNotification(sbn.key)
         if (!captureRunning || sbn.packageName == packageName || !::lifecycleStore.isInitialized) return
         val identity = NotificationSignalAnalyzer.notificationIdentity(sbn.toMinimalAnalysisFacts())
         val lifecycle = lifecycleStore.markRemoved(identity, System.currentTimeMillis())
@@ -156,6 +195,7 @@ class BrainNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val LIFECYCLE_RETENTION_MS = 14L * 24L * 60L * 60L * 1000L
+        private const val CONTINUITY_RETENTION_MS = 30L * 24L * 60L * 60L * 1000L
     }
 }
 
@@ -307,6 +347,7 @@ private fun StatusBarNotification.toObservation(importance: Int?): NotificationO
         put("notificationWhen", notification.`when`)
         put("postTime", postTime)
         put("replyable", replyable)
+        put("hasContentIntent", notification.contentIntent != null)
         put("actions", JSONArray().apply {
             actions.forEach { action ->
                 put(JSONObject().apply {
