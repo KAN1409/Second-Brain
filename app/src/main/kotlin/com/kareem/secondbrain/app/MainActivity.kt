@@ -3,12 +3,16 @@ package com.kareem.secondbrain.app
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -93,38 +97,51 @@ private fun CortexRelayRoot(
             onUsageAccess = openUsageAccess,
         )
 
-        Button(
-            onClick = {
-                if (testRunning) return@Button
-                scope.launch {
-                    testRunning = true
-                    try {
-                        val snapshot = RelayRuntimeDiagnostics.state.value
-                        val report = withContext(Dispatchers.IO) {
-                            RelaySystemTestRunner.run(
-                                context.applicationContext,
-                                RelaySystemTestInput(
-                                    captureRunning = captureState.mode == CaptureMode.RUNNING,
-                                    notificationAccess = access.notificationAccess,
-                                    accessibilityAccess = access.accessibilityAccess,
-                                    usageAccess = access.usageAccess,
-                                    diagnostics = snapshot,
-                                ),
-                            )
-                        }
-                        RelaySystemTestExporter.share(
-                            context.applicationContext,
-                            report,
-                            RelayRuntimeDiagnostics.state.value,
-                        )
-                    } finally {
-                        testRunning = false
-                    }
-                }
-            },
+        Column(
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.End,
         ) {
-            Text(if (testRunning) "Testing…" else "Full system test")
+            OutlinedButton(
+                onClick = {
+                    val shared = runCatching { RelayReplayExporter.replayLatestAndShare(context.applicationContext) }
+                        .getOrDefault(false)
+                    if (!shared) {
+                        Toast.makeText(context, "No forensic evidence is available to replay yet", Toast.LENGTH_SHORT).show()
+                    }
+                },
+            ) { Text("Replay latest evidence") }
+
+            Button(
+                onClick = {
+                    if (testRunning) return@Button
+                    scope.launch {
+                        testRunning = true
+                        try {
+                            val snapshot = RelayRuntimeDiagnostics.state.value
+                            val report = withContext(Dispatchers.IO) {
+                                RelaySystemTestRunner.run(
+                                    context.applicationContext,
+                                    RelaySystemTestInput(
+                                        captureRunning = captureState.mode == CaptureMode.RUNNING,
+                                        notificationAccess = access.notificationAccess,
+                                        accessibilityAccess = access.accessibilityAccess,
+                                        usageAccess = access.usageAccess,
+                                        diagnostics = snapshot,
+                                    ),
+                                )
+                            }
+                            RelaySystemTestExporter.share(
+                                context.applicationContext,
+                                report,
+                                RelayRuntimeDiagnostics.state.value,
+                            )
+                        } finally {
+                            testRunning = false
+                        }
+                    }
+                },
+            ) { Text(if (testRunning) "Testing…" else "Full system test") }
         }
     }
 }
