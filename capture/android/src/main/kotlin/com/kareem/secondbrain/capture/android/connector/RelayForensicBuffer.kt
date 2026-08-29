@@ -37,6 +37,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
         const val MAX_RECORDS = 2_000
         const val MAX_TOTAL_BYTES = 32L * 1024L * 1024L
         private const val SUFFIX = ".json"
+        private const val POLICY_FILE = "cortex-relay-mechanical-policy-v1.json"
         private val instances = ConcurrentHashMap<String, RelayForensicBuffer>()
 
         fun forContext(context: Context): RelayForensicBuffer {
@@ -54,7 +55,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
         filterDecision: RelayFilterDecision,
         actionCapabilities: List<RelayActionCapabilityDescriptor>,
         capturedAtEpochMs: Long = System.currentTimeMillis(),
-        retentionMs: Long = RETENTION_MS,
+        retentionMs: Long = configuredRetentionMs(),
     ) {
         ensureDirectory()
         val root = JSONObject().apply {
@@ -138,7 +139,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
     @Synchronized
     fun prune(
         nowEpochMs: Long = System.currentTimeMillis(),
-        retentionMs: Long = RETENTION_MS,
+        retentionMs: Long = configuredRetentionMs(),
     ) {
         ensureDirectory()
         val boundedRetention = retentionMs.coerceIn(MIN_RETENTION_MS, RETENTION_MS)
@@ -162,6 +163,17 @@ class RelayForensicBuffer private constructor(private val directory: File) {
                 if (file.delete()) total -= size
             }
         }
+    }
+
+    private fun configuredRetentionMs(): Long {
+        val policyFile = File(directory.parentFile, POLICY_FILE)
+        if (!policyFile.exists()) return RETENTION_MS
+        return runCatching {
+            val hours = JSONObject(policyFile.readText(Charsets.UTF_8))
+                .optInt("forensic_retention_hours", 72)
+                .coerceIn(24, 72)
+            hours.toLong() * 60L * 60L * 1000L
+        }.getOrDefault(RETENTION_MS)
     }
 
     private fun commandJson(command: CaptureCommand.Notification) = JSONObject().apply {
