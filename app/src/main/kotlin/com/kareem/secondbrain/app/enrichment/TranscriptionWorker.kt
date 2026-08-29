@@ -6,6 +6,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.kareem.secondbrain.ai.api.AudioAsset
 import com.kareem.secondbrain.ai.api.Transcriber
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
+import com.kareem.secondbrain.capture.android.intelligence.observeGenericEvidence
 import com.kareem.secondbrain.core.common.TextFingerprint
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.domain.AssetRepository
@@ -50,6 +52,22 @@ class TranscriptionWorker @AssistedInject constructor(
             enrichment.markReady(eventId, text, normalized, TextFingerprint.sha256(normalized), metadata)
             enrichment.updateMemoryBody(eventId, text, System.currentTimeMillis())
             enrichment.getMemoryByEventId(eventId)?.id?.let { memoryId -> search.index(memoryId) }
+            runCatching {
+                RelayIntelligenceV3.forContext(applicationContext).observeGenericEvidence(
+                    kind = "TRANSCRIPT",
+                    sourcePackage = applicationContext.packageName,
+                    text = text,
+                    occurredAtEpochMs = System.currentTimeMillis(),
+                    provenance = "Local voice transcription enrichment",
+                    metadata = JSONObject().apply {
+                        put("event_id", eventId)
+                        put("asset_id", assetId)
+                        put("engine", transcript.modelSignature)
+                        put("language", transcript.language ?: JSONObject.NULL)
+                        put("segment_count", transcript.segments.size)
+                    },
+                )
+            }
             Result.success()
         } catch (t: Throwable) {
             enrichment.markFailed(eventId, failureMetadata(t))
