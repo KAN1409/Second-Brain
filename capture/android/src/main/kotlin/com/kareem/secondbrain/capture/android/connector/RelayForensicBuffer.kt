@@ -28,15 +28,11 @@ data class RelayForensicRecord(
     val json: JSONObject,
 )
 
-/**
- * Short-lived local forensic evidence buffer for Relay debugging and replay.
- *
- * It is intentionally bounded to 72 hours / 2,000 records / 32 MiB and lives under noBackupFiles.
- * This is operational evidence, not long-term personal memory.
- */
+/** Short-lived local operational evidence buffer, never long-term personal memory. */
 class RelayForensicBuffer private constructor(private val directory: File) {
     companion object {
         const val SCHEMA = "CORTEX_RELAY_FORENSIC_V2"
+        const val MIN_RETENTION_MS = 24L * 60L * 60L * 1000L
         const val RETENTION_MS = 72L * 60L * 60L * 1000L
         const val MAX_RECORDS = 2_000
         const val MAX_TOTAL_BYTES = 32L * 1024L * 1024L
@@ -58,6 +54,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
         filterDecision: RelayFilterDecision,
         actionCapabilities: List<RelayActionCapabilityDescriptor>,
         capturedAtEpochMs: Long = System.currentTimeMillis(),
+        retentionMs: Long = RETENTION_MS,
     ) {
         ensureDirectory()
         val root = JSONObject().apply {
@@ -108,7 +105,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
             })
         }
         writeCrashSafe(fileFor(eventId), root.toString())
-        prune(capturedAtEpochMs)
+        prune(capturedAtEpochMs, retentionMs)
         RelayV2OperationalMetrics.markForensic(stats())
     }
 
@@ -139,9 +136,13 @@ class RelayForensicBuffer private constructor(private val directory: File) {
     }
 
     @Synchronized
-    fun prune(nowEpochMs: Long = System.currentTimeMillis()) {
+    fun prune(
+        nowEpochMs: Long = System.currentTimeMillis(),
+        retentionMs: Long = RETENTION_MS,
+    ) {
         ensureDirectory()
-        val cutoff = nowEpochMs - RETENTION_MS
+        val boundedRetention = retentionMs.coerceIn(MIN_RETENTION_MS, RETENTION_MS)
+        val cutoff = nowEpochMs - boundedRetention
         filesNewestFirst().forEach { file ->
             val captured = runCatching { JSONObject(file.readText()).optLong("captured_at", 0L) }.getOrDefault(0L)
             if (captured <= 0L || captured < cutoff) file.delete()
@@ -220,11 +221,7 @@ class RelayForensicBuffer private constructor(private val directory: File) {
 
     private fun readRecord(file: File): RelayForensicRecord? = runCatching {
         val json = JSONObject(file.readText(Charsets.UTF_8))
-        RelayForensicRecord(
-            eventId = json.getString("event_id"),
-            capturedAtEpochMs = json.getLong("captured_at"),
-            json = json,
-        )
+        RelayForensicRecord(json.getString("event_id"), json.getLong("captured_at"), json)
     }.getOrNull()
 
     private fun filesNewestFirst(): List<File> = directory.listFiles().orEmpty()
