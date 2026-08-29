@@ -1,5 +1,6 @@
 package com.kareem.secondbrain.app
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -188,13 +189,14 @@ internal fun RelayDashboardScreen(
 
 @Composable
 private fun RecentSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
-                text = friendlyAppName(signal.packageName),
+                text = friendlyAppName(context, signal.packageName),
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -238,6 +240,7 @@ private fun RecentSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     var showTechnical by remember(signal.eventId) { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -245,7 +248,7 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
             modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text(friendlyAppName(signal.packageName), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(friendlyAppName(context, signal.packageName), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
                 humanDeliveryLabel(signal.deliveryState),
                 style = MaterialTheme.typography.titleMedium,
@@ -357,18 +360,42 @@ private fun DetailRow(label: String, value: String) {
 
 private fun formatSignalTime(instant: Instant): String = signalTimeFormatter.format(instant.atZone(ZoneId.systemDefault()))
 
-private fun friendlyAppName(packageName: String): String = when (packageName) {
-    "com.whatsapp" -> "WhatsApp"
-    "com.whatsapp.w4b" -> "WhatsApp Business"
-    "com.google.android.gm" -> "Gmail"
-    "com.google.android.apps.messaging" -> "Messages"
-    "com.samsung.android.messaging" -> "Samsung Messages"
-    "com.samsung.android.dialer" -> "Phone"
-    "com.android.systemui" -> "Android System"
-    "com.samsung.android.app.smartcapture" -> "Samsung Capture"
-    "com.openai.chatgpt" -> "ChatGPT"
-    "com.google.android.apps.youtube.music" -> "YouTube Music"
-    else -> packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() }
+private fun friendlyAppName(context: Context, packageName: String): String {
+    val packageManager = context.packageManager
+    val installedLabel = runCatching {
+        val applicationInfo = packageManager.getApplicationInfo(packageName, 0)
+        packageManager.getApplicationLabel(applicationInfo).toString().trim()
+    }.getOrNull()?.takeIf { label ->
+        label.isNotBlank() && !(label.equals("Android", ignoreCase = true) && !isAndroidFrameworkPackage(packageName))
+    }
+    if (installedLabel != null) return installedLabel
+
+    return when (packageName) {
+        "com.whatsapp" -> "WhatsApp"
+        "com.whatsapp.w4b" -> "WhatsApp Business"
+        "com.google.android.gm" -> "Gmail"
+        "com.google.android.apps.messaging" -> "Messages"
+        "com.samsung.android.messaging" -> "Samsung Messages"
+        "com.samsung.android.dialer" -> "Phone"
+        "com.android.systemui" -> "Android System"
+        "com.samsung.android.app.smartcapture" -> "Samsung Capture"
+        "com.openai.chatgpt" -> "ChatGPT"
+        "com.google.android.apps.youtube.music" -> "YouTube Music"
+        else -> packageDerivedAppName(packageName)
+    }
+}
+
+private fun isAndroidFrameworkPackage(packageName: String): Boolean =
+    packageName == "android" || packageName.startsWith("com.android.")
+
+private fun packageDerivedAppName(packageName: String): String {
+    val genericSegments = setOf("com", "org", "net", "android", "app", "apps", "mobile", "client", "release", "debug")
+    val candidate = packageName
+        .split('.')
+        .asReversed()
+        .firstOrNull { segment -> segment.isNotBlank() && segment.lowercase() !in genericSegments }
+        ?: packageName.substringAfterLast('.')
+    return candidate.replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
 }
 
 private fun humanDeliveryLabel(state: RelayDeliveryState): String = when (state) {
