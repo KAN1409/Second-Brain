@@ -224,6 +224,11 @@ object RelayActionRuntimeRegistry {
         rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(result.success)
+        RelayEvidenceIntelligence.forContext(context).markOutcome(
+            logicalSignalId = result.logicalSignalId,
+            outcome = "ACTION_${result.status}",
+            atEpochMs = result.executedAt.toEpochMilli(),
+        )
         return result
     }
 
@@ -232,6 +237,11 @@ object RelayActionRuntimeRegistry {
         rememberResult(result)
         RelayActionAuditStore.forContext(context).append(result)
         RelayV2OperationalMetrics.markActionResult(false)
+        RelayEvidenceIntelligence.forContext(context).markOutcome(
+            logicalSignalId = result.logicalSignalId,
+            outcome = "ACTION_${result.status}",
+            atEpochMs = result.executedAt.toEpochMilli(),
+        )
         return result
     }
 
