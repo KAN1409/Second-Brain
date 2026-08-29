@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestInput
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestRunner
@@ -33,6 +34,7 @@ import com.kareem.secondbrain.core.database.BrainDatabase
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.core.model.CaptureState
+import com.kareem.secondbrain.domain.CaptureHealthRepository
 import com.kareem.secondbrain.domain.CaptureRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +45,7 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var captureRepository: CaptureRepository
+    @Inject lateinit var healthRepository: CaptureHealthRepository
     @Inject lateinit var accessChecker: CaptureAccessChecker
     @Inject lateinit var database: BrainDatabase
 
@@ -50,7 +53,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        accessSnapshotState.value = accessChecker.snapshot()
+        refreshAccessSnapshot()
         setContent {
             CortexRelayRoot(
                 captureRepository = captureRepository,
@@ -65,7 +68,24 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::accessChecker.isInitialized) accessSnapshotState.value = accessChecker.snapshot()
+        refreshAccessSnapshot()
+    }
+
+    /**
+     * Service callbacks are authoritative when a service is alive. If Android access has been
+     * revoked while Relay was not running, however, the persisted health row can otherwise retain a
+     * stale `true`. We only clear impossible connected states here; we never synthesize a positive
+     * connection merely because permission/access is granted.
+     */
+    private fun refreshAccessSnapshot() {
+        if (!::accessChecker.isInitialized) return
+        val snapshot = accessChecker.snapshot()
+        accessSnapshotState.value = snapshot
+        if (!::healthRepository.isInitialized) return
+        lifecycleScope.launch {
+            if (!snapshot.notificationAccess) healthRepository.setNotificationListenerConnected(false)
+            if (!snapshot.accessibilityAccess) healthRepository.setAccessibilityConnected(false)
+        }
     }
 }
 
