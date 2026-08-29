@@ -47,7 +47,7 @@ class BrainNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (!captureRunning || sbn.packageName == packageName) return
+        if (!captureRunning || sbn.packageName == packageName || sbn.isMechanicalProgressNoise()) return
         val command = sbn.toCaptureCommand()
         serviceScope.launch { captureRepository.ingest(command) }
     }
@@ -58,6 +58,52 @@ class BrainNotificationListener : NotificationListenerService() {
         super.onDestroy()
     }
 }
+
+/**
+ * Relay may remove only deterministic machine progress noise. It must not decide personal
+ * importance: semantic relevance remains Cortex's responsibility. Requiring both an operation
+ * marker and a concrete progress counter/percentage keeps this gate deliberately conservative.
+ */
+private fun StatusBarNotification.isMechanicalProgressNoise(): Boolean {
+    val extras = notification.extras
+    val text = listOfNotNull(
+        extras.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
+        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
+        extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
+    ).joinToString(" ").replace(Regex("\\s+"), " ").trim().lowercase()
+
+    if (text.isEmpty()) return false
+
+    val operation = MECHANICAL_PROGRESS_OPERATIONS.any(text::contains)
+    if (!operation) return false
+
+    return PROGRESS_COUNTER.containsMatchIn(text) ||
+        PROGRESS_PERCENT.containsMatchIn(text) ||
+        text.contains("items remaining") ||
+        text.contains("remaining items") ||
+        text.contains(" progress")
+}
+
+private val PROGRESS_COUNTER = Regex("(?i)\\b\\d+\\s+(?:of|/)\\s*\\d+\\b")
+private val PROGRESS_PERCENT = Regex("(?i)\\b\\d{1,3}%\\b")
+private val MECHANICAL_PROGRESS_OPERATIONS = listOf(
+    "deleting item",
+    "deleting ",
+    "uploading ",
+    "downloading ",
+    "syncing ",
+    "processing ",
+    "importing ",
+    "exporting ",
+    "backing up ",
+    "restoring ",
+    "scanning ",
+    "optimizing ",
+    "moving item",
+    "copying item",
+    "preparing ",
+)
 
 private fun StatusBarNotification.toCaptureCommand(): CaptureCommand.Notification {
     val extras = notification.extras
