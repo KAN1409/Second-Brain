@@ -9,6 +9,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.kareem.secondbrain.capture.android.health.CaptureAccessChecker
+import com.kareem.secondbrain.capture.android.notification.RelayEvidenceIntelligence
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.AppSessionRepository
 import com.kareem.secondbrain.domain.CaptureCommand
@@ -57,17 +58,18 @@ class UsageReconciliationWorker(
             }
         }
 
-        // No transition in the reconciliation window means there is nothing reliable to repair.
         if (latestStateByPackage.isEmpty()) return Result.success()
 
         val foreground = latestStateByPackage
             .asSequence()
             .filter { (_, state) -> state.eventType == UsageEvents.Event.ACTIVITY_RESUMED }
             .maxByOrNull { (_, state) -> state.timestamp }
+        val intelligence = RelayEvidenceIntelligence.forContext(applicationContext)
 
         if (foreground == null || foreground.key == applicationContext.packageName) {
             val closeAt = latestStateByPackage.values.maxOf { it.timestamp }.let(Instant::ofEpochMilli)
             entryPoint.appSessions().closeOpenSession(closeAt)?.let { previous ->
+                intelligence.observeAppActivity(previous.packageName, closeAt.toEpochMilli(), false)
                 entryPoint.captureRepository().ingest(
                     CaptureCommand.AppActivity(closeAt, previous.packageName, enteredForeground = false),
                 )
@@ -80,6 +82,7 @@ class UsageReconciliationWorker(
         val policy = entryPoint.policyRepository().get(packageName)
         if (!policy.usage) {
             entryPoint.appSessions().closeOpenSession(at)?.let { previous ->
+                intelligence.observeAppActivity(previous.packageName, at.toEpochMilli(), false)
                 entryPoint.captureRepository().ingest(
                     CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false),
                 )
@@ -89,10 +92,12 @@ class UsageReconciliationWorker(
 
         val transition = entryPoint.appSessions().switchForeground(packageName, at) ?: return Result.success()
         transition.previous?.let { previous ->
+            intelligence.observeAppActivity(previous.packageName, at.toEpochMilli(), false)
             entryPoint.captureRepository().ingest(
                 CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false),
             )
         }
+        intelligence.observeAppActivity(packageName, at.toEpochMilli(), true)
         entryPoint.captureRepository().ingest(
             CaptureCommand.AppActivity(at, packageName, enteredForeground = true),
         )
