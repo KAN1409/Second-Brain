@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.core.content.ContextCompat
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.AppSessionRepository
 import com.kareem.secondbrain.domain.CaptureCommand
@@ -44,12 +45,14 @@ class BrainAccessibilityService : AccessibilityService() {
     private var debounceJob: Job? = null
     @Volatile private var captureRunning = false
     private val lastScreenshotOcrAt = mutableMapOf<String, Long>()
+    private lateinit var intelligence: RelayIntelligenceV3
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_SCREEN_OFF || !captureRunning) return
             serviceScope.launch {
                 val at = Instant.now()
                 appSessions.closeOpenSession(at)?.let { previous ->
+                    runCatching { intelligence.observeAppActivity(previous.packageName, false, at.toEpochMilli()) }
                     captureRepository.ingest(CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false))
                 }
             }
@@ -58,6 +61,7 @@ class BrainAccessibilityService : AccessibilityService() {
 
     override fun onCreate() {
         super.onCreate()
+        intelligence = RelayIntelligenceV3.forContext(applicationContext)
         serviceScope.launch {
             captureRepository.observeCaptureState().collectLatest { state ->
                 captureRunning = state.mode == CaptureMode.RUNNING
@@ -84,6 +88,7 @@ class BrainAccessibilityService : AccessibilityService() {
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
                 serviceScope.launch {
                     appSessions.closeOpenSession(now)?.let { previous ->
+                        runCatching { intelligence.observeAppActivity(previous.packageName, false, now.toEpochMilli()) }
                         captureRepository.ingest(
                             CaptureCommand.AppActivity(now, previous.packageName, enteredForeground = false),
                         )
@@ -121,6 +126,16 @@ class BrainAccessibilityService : AccessibilityService() {
                 }
                 return@launch
             }
+            val capturedAt = Instant.now()
+            val v3 = runCatching {
+                intelligence.observeScreen(
+                    packageName = activePackage,
+                    accessibleText = extracted.text,
+                    className = eventClass,
+                    eventType = eventType,
+                    occurredAtEpochMs = capturedAt.toEpochMilli(),
+                )
+            }.getOrNull()
             val metadata = JSONObject().apply {
                 put("eventType", eventType)
                 put("className", eventClass ?: JSONObject.NULL)
@@ -128,11 +143,12 @@ class BrainAccessibilityService : AccessibilityService() {
                 put("visitedNodes", extracted.visitedNodes)
                 put("passwordNodesSkipped", extracted.passwordNodesSkipped)
                 put("source", "accessibility_tree")
+                if (v3 != null) put("relay_intelligence_v3", v3)
             }.toString()
 
             captureRepository.ingest(
                 CaptureCommand.Screen(
-                    occurredAt = Instant.now(),
+                    occurredAt = capturedAt,
                     packageName = activePackage,
                     accessibleText = extracted.text,
                     metadataJson = metadata,
@@ -211,6 +227,7 @@ class BrainAccessibilityService : AccessibilityService() {
         if (!policy.usage) {
             val previous = appSessions.closeOpenSession(at)
             previous?.let {
+                runCatching { intelligence.observeAppActivity(it.packageName, false, at.toEpochMilli()) }
                 captureRepository.ingest(CaptureCommand.AppActivity(at, it.packageName, enteredForeground = false))
             }
             return
@@ -218,8 +235,10 @@ class BrainAccessibilityService : AccessibilityService() {
 
         val transition = appSessions.switchForeground(packageName, at) ?: return
         transition.previous?.let { previous ->
+            runCatching { intelligence.observeAppActivity(previous.packageName, false, at.toEpochMilli()) }
             captureRepository.ingest(CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false))
         }
+        runCatching { intelligence.observeAppActivity(packageName, true, at.toEpochMilli()) }
         captureRepository.ingest(CaptureCommand.AppActivity(at, packageName, enteredForeground = true))
     }
 
