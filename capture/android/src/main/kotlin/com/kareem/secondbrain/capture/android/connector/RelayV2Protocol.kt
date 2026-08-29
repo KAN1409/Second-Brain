@@ -14,6 +14,7 @@ object RelayV2Protocol {
     const val ACTION_BRIDGE = "ACTION_BRIDGE_V1"
     const val POLICY_FEEDBACK = "POLICY_FEEDBACK_V1"
     const val REPLAY_DIAGNOSTICS = "REPLAY_DIAGNOSTICS_V1"
+    const val EVIDENCE_INTELLIGENCE = "EVIDENCE_INTELLIGENCE_V1"
 
     const val MSG_INGEST_V2 = 20
     const val MSG_ACTION_REQUEST = 200
@@ -31,6 +32,7 @@ object RelayV2Protocol {
         put(ACTION_BRIDGE)
         put(POLICY_FEEDBACK)
         put(REPLAY_DIAGNOSTICS)
+        put(EVIDENCE_INTELLIGENCE)
     }
 
     /** Convert a durable V1 notification event into a v2 envelope without changing event identity. */
@@ -61,6 +63,9 @@ object RelayV2Protocol {
             })
             put("semantic", JSONObject(semantic.toString()))
             put("action_capabilities", metadata.optJSONArray("relay_action_capabilities_v1") ?: JSONArray())
+            metadata.optJSONObject("relay_evidence_intelligence_v1")?.let {
+                put("evidence_intelligence", JSONObject(it.toString()))
+            }
             put("compatibility", JSONObject().apply {
                 put("v1_protocol", V1_PROTOCOL)
                 put("v1_event_id", v1.optString("event_id"))
