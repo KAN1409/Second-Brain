@@ -13,7 +13,6 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 enum class RelayMechanicalNoiseRule {
-    EXACT_DUPLICATE,
     MACHINE_CHURN,
     GROUP_SUMMARY,
     SYSTEM_CHARGING,
@@ -24,7 +23,9 @@ data class RelayMechanicalPolicy(
     val version: Long,
     val disabledNoiseRules: Set<RelayMechanicalNoiseRule>,
     val forensicRetentionHours: Int,
-)
+) {
+    val forensicRetentionMs: Long get() = forensicRetentionHours.toLong() * 60L * 60L * 1000L
+}
 
 data class RelayPolicyUpdateResult(
     val accepted: Boolean,
@@ -34,11 +35,11 @@ data class RelayPolicyUpdateResult(
 )
 
 /**
- * Cortex -> Relay feedback that is deliberately limited to mechanical capture behavior.
+ * Cortex -> Relay feedback deliberately limited to mechanical capture behavior.
  *
- * Policy can only DISABLE existing confirmed-noise suppression (preserve more evidence) and choose
- * the bounded 24–72h forensic retention window. It cannot add personal suppression, identify people
- * as unimportant, or express priority/relevance rules.
+ * Exact duplicate snapshots are outside this policy because they contain no new evidence and are
+ * discarded before a stored Relay signal exists. For stored evidence, policy may only DISABLE an
+ * existing confirmed-noise suppression (preserve more evidence) and choose 24–72h forensic expiry.
  */
 class RelayMechanicalPolicyStore private constructor(private val file: File) {
     companion object {
@@ -128,7 +129,6 @@ class RelayMechanicalPolicyStore private constructor(private val file: File) {
     }
 
     private fun ruleFor(facts: NotificationNoiseFacts): RelayMechanicalNoiseRule? = when {
-        facts.meaningfulChange == NotificationMeaningfulChange.EXACT_DUPLICATE -> RelayMechanicalNoiseRule.EXACT_DUPLICATE
         facts.meaningfulChange == NotificationMeaningfulChange.MACHINE_CHURN_ONLY -> RelayMechanicalNoiseRule.MACHINE_CHURN
         facts.isGroupSummary -> RelayMechanicalNoiseRule.GROUP_SUMMARY
         facts.packageName == "com.android.systemui" && facts.isOngoing -> RelayMechanicalNoiseRule.SYSTEM_CHARGING
