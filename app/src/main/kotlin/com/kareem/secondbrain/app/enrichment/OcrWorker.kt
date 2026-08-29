@@ -6,6 +6,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.kareem.secondbrain.ai.api.ImageInput
 import com.kareem.secondbrain.ai.api.OcrEngine
+import com.kareem.secondbrain.capture.android.intelligence.RelayIntelligenceV3
+import com.kareem.secondbrain.capture.android.intelligence.observeGenericEvidence
 import com.kareem.secondbrain.core.common.TextFingerprint
 import com.kareem.secondbrain.core.database.EnrichmentDao
 import com.kareem.secondbrain.domain.AssetRepository
@@ -43,6 +45,21 @@ class OcrWorker @AssistedInject constructor(
             )
             enrichment.updateMemoryBody(eventId, text.ifBlank { "No text detected" }, System.currentTimeMillis())
             enrichment.getMemoryByEventId(eventId)?.id?.let { memoryId -> search.index(memoryId) }
+            runCatching {
+                RelayIntelligenceV3.forContext(applicationContext).observeGenericEvidence(
+                    kind = "OCR",
+                    sourcePackage = applicationContext.packageName,
+                    text = text.takeIf(String::isNotBlank),
+                    occurredAtEpochMs = System.currentTimeMillis(),
+                    provenance = "Local OCR enrichment of user-captured image asset",
+                    metadata = JSONObject().apply {
+                        put("event_id", eventId)
+                        put("asset_id", assetId)
+                        put("engine", result.engineSignature)
+                        put("mime_type", asset.mimeType)
+                    },
+                )
+            }
             Result.success()
         } catch (t: Throwable) {
             enrichment.markFailed(eventId, failureMetadata(t))
