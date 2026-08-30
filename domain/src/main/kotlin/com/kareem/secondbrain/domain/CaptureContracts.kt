@@ -42,12 +42,6 @@ sealed interface CaptureCommand {
         val enteredForeground: Boolean,
     ) : CaptureCommand
 
-    data class Voice(
-        override val occurredAt: Instant,
-        override val packageName: String? = null,
-        val assetId: String,
-    ) : CaptureCommand
-
     data class Image(
         override val occurredAt: Instant,
         override val packageName: String? = null,
