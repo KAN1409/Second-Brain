@@ -61,7 +61,7 @@ jobs:
           KS_PASS="$RUNNER_TEMP/cortex-relay-ks-pass.txt"
           KEY_PASS="$RUNNER_TEMP/cortex-relay-key-pass.txt"
           UNSIGNED='app/build/outputs/apk/release/app-release-unsigned.apk'
-          SIGNED='app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate5-permanent.apk'
+          SIGNED='app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate7-permanent.apk'
           APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
 
           umask 077
@@ -101,18 +101,18 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: Cortex-Relay-v2.0.0-candidate5-PERMANENT
-          path: app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate5-permanent.apk
+          name: Cortex-Relay-v2.0.0-candidate7-PERMANENT
+          path: app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate7-permanent.apk
           if-no-files-found: error
       - name: Upload CI-only debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cortex-Relay-candidate5-CI-DEBUG-DO-NOT-INSTALL
+          name: Cortex-Relay-candidate7-CI-DEBUG-DO-NOT-INSTALL
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Upload unsigned release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cortex-Relay-v2.0.0-candidate5-UNSIGNED
+          name: Cortex-Relay-v2.0.0-candidate7-UNSIGNED
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
