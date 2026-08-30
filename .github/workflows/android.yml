@@ -41,6 +41,69 @@ jobs:
         run: gradle :app:assembleDebug --stacktrace
       - name: Assemble unsigned release
         run: gradle :app:assembleRelease --stacktrace
+      - name: Sign permanent candidate
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.SECOND_BRAIN_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SECOND_BRAIN_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SECOND_BRAIN_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SECOND_BRAIN_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          EXPECTED_CERT='fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74'
+          [ -n "${KEYSTORE_B64:-}" ] || { echo 'Permanent signing secret is unavailable'; exit 1; }
+          [ -n "${KEYSTORE_PASSWORD:-}" ] || { echo 'Permanent signing password secret is unavailable'; exit 1; }
+          [ -n "${KEY_ALIAS:-}" ] || { echo 'Permanent signing alias secret is unavailable'; exit 1; }
+          [ -n "${KEY_PASSWORD:-}" ] || { echo 'Permanent key password secret is unavailable'; exit 1; }
+
+          KEYSTORE="$RUNNER_TEMP/cortex-relay-permanent.p12"
+          KS_PASS="$RUNNER_TEMP/cortex-relay-ks-pass.txt"
+          KEY_PASS="$RUNNER_TEMP/cortex-relay-key-pass.txt"
+          UNSIGNED='app/build/outputs/apk/release/app-release-unsigned.apk'
+          SIGNED='app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate4-permanent.apk'
+          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+          printf '%s\n' "$KEYSTORE_PASSWORD" > "$KS_PASS"
+          printf '%s\n' "$KEY_PASSWORD" > "$KEY_PASS"
+          [ -s "$KEYSTORE" ] || { echo 'Decoded permanent keystore is empty'; exit 1; }
+          [ -f "$UNSIGNED" ] || { echo 'Unsigned release APK is missing'; exit 1; }
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE" \
+            --ks-type PKCS12 \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "file:$KS_PASS" \
+            --key-pass "file:$KEY_PASS" \
+            --min-sdk-version 24 \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$SIGNED" \
+            "$UNSIGNED"
+
+          VERIFY="$($APKSIGNER verify --verbose --print-certs --min-sdk-version 24 "$SIGNED")"
+          printf '%s\n' "$VERIFY" | grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true'
+          printf '%s\n' "$VERIFY" | grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true'
+          ACTUAL_CERT="$(printf '%s\n' "$VERIFY" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          [ "$ACTUAL_CERT" = "$EXPECTED_CERT" ] || {
+            echo "Permanent signer mismatch: ${ACTUAL_CERT:-missing}"
+            rm -f "$SIGNED"
+            exit 1
+          }
+          echo "Permanent signer verified: $ACTUAL_CERT"
+          sha256sum "$SIGNED"
+          rm -f "$KEYSTORE" "$KS_PASS" "$KEY_PASS"
+      - name: Upload permanent candidate APK
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cortex-Relay-v2.0.0-candidate4-PERMANENT
+          path: app/build/outputs/apk/release/Cortex-Relay-v2.0.0-candidate4-permanent.apk
+          if-no-files-found: error
       - name: Upload CI-only debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -52,12 +115,4 @@ jobs:
         with:
           name: Cortex-Relay-V1-UNSIGNED-RELEASE
           path: app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: error
-      - name: Upload Android APK signing tool
-        uses: actions/upload-artifact@v4
-        with:
-          name: Android-APK-Signing-Tool
-          path: |
-            ${{ env.ANDROID_HOME }}/build-tools/37.0.0/apksigner
-            ${{ env.ANDROID_HOME }}/build-tools/37.0.0/lib/apksigner.jar
           if-no-files-found: error
