@@ -31,8 +31,6 @@ object RelayV2Protocol {
     fun advertisedCapabilities(): JSONArray = JSONArray().apply {
         put("NOTIFICATIONS")
         put(SIGNAL_PROTOCOL)
-        // Preserve the existing bridge identifier for older Cortex negotiation. Candidate5's
-        // runtime gate returns EXECUTION_DEFERRED, so this is compatibility, not permission.
         put(ACTION_BRIDGE)
         put(CAPABILITY_DISCOVERY)
         put(POLICY_FEEDBACK)
@@ -69,9 +67,12 @@ object RelayV2Protocol {
             put("connector_id", v1.optString("connector_id", "second_brain"))
             put("occurred_at", v1.optLong("occurred_at"))
             put("source", JSONObject().apply {
-                put("type", canonicalSource?.optString("adapter")?.takeIf(String::isNotBlank)
-                    ?: v1.optString("source_type", "NOTIFICATION"))
+                // Cortex's Local Bus source-type authority remains the stable V1 vocabulary.
+                // Canonical adapter/mechanism details are additive metadata, not a replacement enum.
+                put("type", v1.optString("source_type", "NOTIFICATION"))
                 put("package", canonicalSource?.opt("package") ?: v1.optString("source_package"))
+                put("adapter", canonicalSource?.optString("adapter")?.takeIf(String::isNotBlank)
+                    ?: "ANDROID_NOTIFICATION")
                 put("mechanism", canonicalSource?.optString("mechanism")?.takeIf(String::isNotBlank)
                     ?: "LOCAL_BUS_COMPATIBILITY")
                 put("notification_key", v1.optString("notification_key"))
@@ -86,7 +87,8 @@ object RelayV2Protocol {
                 put("v1_protocol", V1_PROTOCOL)
                 put("v1_event_id", v1.optString("event_id"))
                 put("event_identity_preserved", true)
-                put("action_execution", "DEFERRED_IN_CANDIDATE5")
+                put("source_type_vocabulary_preserved", true)
+                put("action_execution", "DEFERRED_IN_CANDIDATE6")
             })
         }
     }
