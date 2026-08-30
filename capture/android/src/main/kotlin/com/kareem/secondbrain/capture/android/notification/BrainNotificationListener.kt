@@ -51,6 +51,7 @@ class BrainNotificationListener : NotificationListenerService() {
         lifecycleStore.pruneOlderThan(now - LIFECYCLE_RETENTION_MS)
         continuityStore.pruneOlderThan(now - CONTINUITY_RETENTION_MS)
         RelayForensicBuffer.forContext(applicationContext).prune(now)
+        RelayRawSourceLedger.forContext(applicationContext).prune(now)
         RelayEvidenceIntelligence.forContext(applicationContext).stats()
         CortexConnectorClient.start(applicationContext)
         serviceScope.launch {
@@ -88,13 +89,32 @@ class BrainNotificationListener : NotificationListenerService() {
         )
         val facts = observation.facts
         val notificationIdentity = NotificationSignalAnalyzer.notificationIdentity(facts)
+        val observedAt = sbn.postTime.takeIf { it > 0L } ?: System.currentTimeMillis()
         val lifecycle = lifecycleStore.observePosted(
             notificationIdentity = notificationIdentity,
             visibleFingerprint = NotificationSignalAnalyzer.visibleFingerprint(facts),
             stableChurnFingerprint = NotificationSignalAnalyzer.stableChurnFingerprint(facts),
             messageFingerprints = facts.messages.map(NotificationSignalAnalyzer::messageFingerprint),
-            nowEpochMs = sbn.postTime.takeIf { it > 0L } ?: System.currentTimeMillis(),
+            nowEpochMs = observedAt,
         )
+
+        // Raw forensic truth is recorded before any duplicate/noise decision. This record is bounded
+        // to 72 hours and is deliberately independent from the normalized EvidenceEnvelope.
+        serviceScope.launch {
+            runCatching {
+                RelayRawSourceLedger.forContext(applicationContext).recordNotification(
+                    command = baseCommand,
+                    notificationIdentity = notificationIdentity,
+                    lifecycle = lifecycle,
+                    observedAtEpochMs = observedAt,
+                )
+            }.onFailure { error ->
+                RelayRuntimeDiagnostics.markFailure(
+                    "Raw source ledger write failed: ${error.javaClass.simpleName}; live capture continues",
+                )
+            }
+        }
+
         val analysis = NotificationSignalAnalyzer.analyze(facts, lifecycle)
         RelayRuntimeDiagnostics.markLifecycle(lifecycle.state, analysis.change)
 
@@ -118,28 +138,35 @@ class BrainNotificationListener : NotificationListenerService() {
             actionCapabilities = actionCapabilities,
         ).withEvidenceIntelligence(intelligence)
         val noiseFacts = sbn.toNoiseFacts(enrichedCommand, analysis)
+        val baseFilterDecision = NotificationNoiseClassifier.classify(noiseFacts)
+        val filterDecision = RelayMechanicalPolicyStore.forContext(applicationContext)
+            .adjust(baseFilterDecision, noiseFacts)
+        val routedCommand = enrichedCommand.withRelayRoutingTrace(
+            filterState = filterDecision.state.name,
+            reason = filterDecision.reason,
+        )
 
         serviceScope.launch {
-            when (val result = captureRepository.ingest(enrichedCommand)) {
+            when (val result = captureRepository.ingest(routedCommand)) {
                 is CaptureResult.Stored -> {
                     val eventId = result.eventId
                     RelayRuntimeDiagnostics.markCaptured(
                         eventId = eventId,
-                        packageName = enrichedCommand.packageName,
-                        occurredAt = enrichedCommand.occurredAt,
-                        title = enrichedCommand.title ?: enrichedCommand.conversationTitle,
-                        preview = enrichedCommand.diagnosticPreview(),
-                        body = enrichedCommand.body,
-                        expandedText = enrichedCommand.expandedText,
-                        conversationTitle = enrichedCommand.conversationTitle,
-                        messages = enrichedCommand.messages.map { item ->
+                        packageName = routedCommand.packageName,
+                        occurredAt = routedCommand.occurredAt,
+                        title = routedCommand.title ?: routedCommand.conversationTitle,
+                        preview = routedCommand.diagnosticPreview(),
+                        body = routedCommand.body,
+                        expandedText = routedCommand.expandedText,
+                        conversationTitle = routedCommand.conversationTitle,
+                        messages = routedCommand.messages.map { item ->
                             RelayMessageSnapshot(
                                 sender = item.sender,
                                 text = item.text,
                                 occurredAt = item.timestamp,
                             )
                         },
-                        metadataJson = enrichedCommand.metadataJson,
+                        metadataJson = routedCommand.metadataJson,
                         logicalSignalId = analysis.logicalSignalId,
                         sourceProfileIdentity = analysis.sourceProfileIdentity,
                         notificationIdentity = analysis.notificationIdentity,
@@ -151,19 +178,16 @@ class BrainNotificationListener : NotificationListenerService() {
                         signalType = analysis.signalType.name,
                     )
 
-                    val baseFilterDecision = NotificationNoiseClassifier.classify(noiseFacts)
-                    val filterDecision = RelayMechanicalPolicyStore.forContext(applicationContext)
-                        .adjust(baseFilterDecision, noiseFacts)
                     RelayRuntimeDiagnostics.markFilterDecision(
                         eventId = eventId,
-                        packageName = enrichedCommand.packageName,
+                        packageName = routedCommand.packageName,
                         decision = filterDecision,
                     )
 
                     runCatching {
                         RelayForensicBuffer.forContext(applicationContext).recordNotification(
                             eventId = eventId,
-                            command = enrichedCommand,
+                            command = routedCommand,
                             facts = facts,
                             analysis = analysis,
                             filterDecision = filterDecision,
@@ -178,7 +202,7 @@ class BrainNotificationListener : NotificationListenerService() {
                     if (filterDecision.state != RelayFilterState.DROP_CONFIRMED_NOISE) {
                         CortexConnectorClient.enqueueNotification(
                             applicationContext,
-                            enrichedCommand,
+                            routedCommand,
                             eventId,
                         )
                     }
