@@ -14,6 +14,10 @@ fun CaptureCommand.Notification.withEvidenceIntelligence(envelope: JSONObject): 
     root.put("relay_evidence_intelligence_v1", JSONObject(intelligence.toString()))
     val semantic = root.optJSONObject("relay_semantic_v2")
     semantic?.put("evidence_intelligence", JSONObject(intelligence.toString()))
+
+    // Candidate5 adds the source-agnostic canonical EvidenceEnvelope while preserving every
+    // existing V1/V2 field. Raw Android source facts remain a separate forensic record.
+    RelayEvidenceGatewayV1.attachNotification(this, root)
     return copy(metadataJson = root.toString())
 }
 
@@ -45,5 +49,8 @@ private fun attachActionCapabilityGraph(intelligence: JSONObject, actions: JSONA
         })
     }
     graph.put("live_action_capability_count", actions.length())
-    graph.put("action_execution_policy", "Cortex may propose; Relay revalidates a still-live capability and executes only an explicit request")
+    graph.put(
+        "action_execution_policy",
+        "Discovery is evidence. Any execution still requires a live capability, an explicit Cortex request, and user authorization.",
+    )
 }
