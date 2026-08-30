@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.kareem.secondbrain.capture.android.connector.RelayConnectionState
 import com.kareem.secondbrain.capture.android.connector.RelayDeliveryState
 import com.kareem.secondbrain.capture.android.connector.RelayFilterState
+import com.kareem.secondbrain.capture.android.connector.RelayRawNotification
 import com.kareem.secondbrain.capture.android.connector.RelayRecentSignal
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
@@ -70,11 +71,12 @@ internal fun RelayDashboardScreen(
     val context = LocalContext.current
     val scroll = rememberScrollState()
     var selectedSignal by remember { mutableStateOf<RelayRecentSignal?>(null) }
+    var selectedRaw by remember { mutableStateOf<RelayRawNotification?>(null) }
     var page by remember { mutableStateOf(RelayFeedPage.ALL_CAPTURED) }
 
-    val allSignals = diagnostics.recentSignals
-    val toCortexSignals = remember(allSignals) {
-        allSignals.filter { signal ->
+    val rawNotifications = diagnostics.rawNotifications
+    val toCortexSignals = remember(diagnostics.recentSignals) {
+        diagnostics.recentSignals.filter { signal ->
             signal.filterState == RelayFilterState.FORWARD || signal.filterState == RelayFilterState.LOW_VALUE
         }
     }
@@ -85,7 +87,7 @@ internal fun RelayDashboardScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
                     Text("Cortex Relay", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text(
                         "Phone evidence in. Grounded signals out.",
@@ -107,8 +109,8 @@ internal fun RelayDashboardScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Live pipeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FlowMetric("Captured", diagnostics.captured.toString(), Modifier.weight(1f))
-                        FlowMetric("To Cortex", toCortexSignals.size.toString(), Modifier.weight(1f))
+                        FlowMetric("Received", diagnostics.rawReceived.toString(), Modifier.weight(1f))
+                        FlowMetric("To Cortex", diagnostics.sent.toString(), Modifier.weight(1f))
                         FlowMetric("Filtered", diagnostics.filtered.toString(), Modifier.weight(1f))
                     }
                     HorizontalDivider()
@@ -128,26 +130,18 @@ internal fun RelayDashboardScreen(
 
             FeedPageSelector(
                 selected = page,
-                allCount = allSignals.size,
+                allCount = rawNotifications.size,
                 toCortexCount = toCortexSignals.size,
                 onSelect = { page = it },
             )
 
             when (page) {
-                RelayFeedPage.ALL_CAPTURED -> SignalFeedCard(
-                    title = "All notifications",
-                    subtitle = "Everything Relay receives, before routing decisions. Filtered noise stays visible here.",
-                    signals = allSignals,
-                    processed = false,
-                    emptyText = "No notifications captured in this session yet.",
-                    onSignal = { selectedSignal = it },
+                RelayFeedPage.ALL_CAPTURED -> RawNotificationFeedCard(
+                    notifications = rawNotifications,
+                    onNotification = { selectedRaw = it },
                 )
-                RelayFeedPage.TO_CORTEX -> SignalFeedCard(
-                    title = "To Cortex",
-                    subtitle = "Categorized, filtered and mechanically assessed. Only these notification signals are routed to Cortex.",
+                RelayFeedPage.TO_CORTEX -> ProcessedSignalFeedCard(
                     signals = toCortexSignals,
-                    processed = true,
-                    emptyText = "Nothing has passed Relay's routing gate in this session yet.",
                     onSignal = { selectedSignal = it },
                 )
             }
@@ -210,6 +204,9 @@ internal fun RelayDashboardScreen(
     selectedSignal?.let { signal ->
         SignalDetailsSheet(signal = signal, onDismiss = { selectedSignal = null })
     }
+    selectedRaw?.let { notification ->
+        RawNotificationDetailsSheet(notification = notification, onDismiss = { selectedRaw = null })
+    }
 }
 
 @Composable
@@ -221,44 +218,92 @@ private fun FeedPageSelector(
 ) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (selected == RelayFeedPage.ALL_CAPTURED) {
-            Button(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) {
-                Text("All · $allCount")
-            }
+            Button(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) { Text("All · $allCount") }
         } else {
-            OutlinedButton(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) {
-                Text("All · $allCount")
-            }
+            OutlinedButton(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) { Text("All · $allCount") }
         }
         if (selected == RelayFeedPage.TO_CORTEX) {
-            Button(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) {
-                Text("To Cortex · $toCortexCount")
-            }
+            Button(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) { Text("To Cortex · $toCortexCount") }
         } else {
-            OutlinedButton(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) {
-                Text("To Cortex · $toCortexCount")
+            OutlinedButton(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) { Text("To Cortex · $toCortexCount") }
+        }
+    }
+}
+
+@Composable
+private fun RawNotificationFeedCard(
+    notifications: List<RelayRawNotification>,
+    onNotification: (RelayRawNotification) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("All notifications", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Raw listener feed · every notification callback before dedupe, categorization, filtering or routing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (notifications.isEmpty()) {
+                Text("No notifications received in this session yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                notifications.forEachIndexed { index, item ->
+                    RawNotificationRow(item = item, onClick = { onNotification(item) })
+                    if (index < notifications.lastIndex) HorizontalDivider()
+                }
             }
         }
     }
 }
 
 @Composable
-private fun SignalFeedCard(
-    title: String,
-    subtitle: String,
+private fun RawNotificationRow(item: RelayRawNotification, onClick: () -> Unit) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                friendlyAppName(context, item.packageName),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text("RAW", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        (item.title ?: item.conversationTitle)?.let { title ->
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        item.body?.let { body ->
+            Text(body, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatSignalTime(item.receivedAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Details", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun ProcessedSignalFeedCard(
     signals: List<RelayRecentSignal>,
-    processed: Boolean,
-    emptyText: String,
     onSignal: (RelayRecentSignal) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("To Cortex", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "Categorized, deduplicated, filtered and mechanically assessed. This is the exact notification lane allowed to Cortex.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (signals.isEmpty()) {
-                Text(emptyText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Nothing has passed Relay's routing gate in this session yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 signals.forEachIndexed { index, signal ->
-                    SignalRow(signal = signal, processed = processed, onClick = { onSignal(signal) })
+                    ProcessedSignalRow(signal = signal, onClick = { onSignal(signal) })
                     if (index < signals.lastIndex) HorizontalDivider()
                 }
             }
@@ -267,7 +312,7 @@ private fun SignalFeedCard(
 }
 
 @Composable
-private fun SignalRow(signal: RelayRecentSignal, processed: Boolean, onClick: () -> Unit) {
+private fun ProcessedSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
     val context = LocalContext.current
     Column(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
@@ -282,12 +327,7 @@ private fun SignalRow(signal: RelayRecentSignal, processed: Boolean, onClick: ()
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                if (processed) humanRouteLabel(signal) else humanDeliveryLabel(signal.deliveryState),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = if (processed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text(humanRouteLabel(signal), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
         }
         signal.title?.let { title ->
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -299,25 +339,55 @@ private fun SignalRow(signal: RelayRecentSignal, processed: Boolean, onClick: ()
             buildString {
                 append(signal.signalType?.let(::humanSignalType) ?: "Uncategorized")
                 signal.lifecycleState?.let { append(" · ").append(humanLifecycle(it)) }
-                if (processed) append(" · ").append(humanFilterLabel(signal.filterState))
+                append(" · ").append(humanFilterLabel(signal.filterState))
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (processed) {
-            signal.filterReason?.takeIf(String::isNotBlank)?.let { reason ->
-                Text(
-                    "Assessment: $reason",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        signal.filterReason?.takeIf(String::isNotBlank)?.let { reason ->
+            Text(
+                "Assessment: $reason",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(formatSignalTime(signal.occurredAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Details", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RawNotificationDetailsSheet(notification: RelayRawNotification, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(friendlyAppName(context, notification.packageName), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("Raw notification", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                fullSignalTimeFormatter.format(notification.receivedAt.atZone(ZoneId.systemDefault())),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            notification.title?.let { DetailSection("Title", it) }
+            notification.conversationTitle?.takeIf { it != notification.title }?.let { DetailSection("Conversation", it) }
+            notification.body?.let { DetailSection("Notification text", it) }
+            HorizontalDivider()
+            Text("Before processing", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "This view is captured before Relay dedupe, categorization, filtering and Cortex routing. Check the To Cortex page for the processed lane.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            DetailRow("Package", notification.packageName)
+            DetailRow("Notification key", notification.notificationKey)
+            DetailRow("Android post time", notification.occurredAt.toString())
         }
     }
 }
