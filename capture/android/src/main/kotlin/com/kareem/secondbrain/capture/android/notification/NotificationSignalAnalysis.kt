@@ -85,6 +85,10 @@ object NotificationSignalAnalyzer {
     private val whitespace = Regex("\\s+")
     private val percentage = Regex("(?<!\\d)(?:100|[1-9]?\\d)(?:[.,]\\d+)?%(?!\\d)")
     private val progressRatio = Regex("(?<!\\d)\\d+\\s*/\\s*\\d+(?!\\d)")
+    // Elapsed/remaining timers such as 00:06, 1:23 or 01:02:03. These are mechanical churn
+    // only when the rest of the visible content is unchanged and the notification is an ongoing
+    // service/progress surface.
+    private val durationClock = Regex("(?<!\\d)(?:\\d{1,2}:)?\\d{1,2}:\\d{2}(?!\\d)")
     private val urlRegex = Regex("https?://[^\\s<>]+", RegexOption.IGNORE_CASE)
     private val phoneRegex = Regex("(?<![A-Za-z0-9])(?:\\+?\\d[\\d\\s().-]{6,}\\d)(?![A-Za-z0-9])")
     private val dateRegex = Regex("\\b(?:\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?)\\b")
@@ -123,6 +127,7 @@ object NotificationSignalAnalyzer {
         val canonical = canonicalVisibleText(facts)
             .replace(percentage, "<percent>")
             .replace(progressRatio, "<progress>")
+            .replace(durationClock, "<duration>")
         return stableId("stable-visible", canonical)
     }
 
@@ -167,7 +172,7 @@ object NotificationSignalAnalyzer {
             NotificationMeaningfulChange.NEW_POST -> "New Android notification instance"
             NotificationMeaningfulChange.NEW_MESSAGES -> "Updated notification contains ${lifecycle.newMessageFingerprints.size} new structured message(s)"
             NotificationMeaningfulChange.EXACT_DUPLICATE -> "Same notification snapshot already observed"
-            NotificationMeaningfulChange.MACHINE_CHURN_ONLY -> "Only deterministic progress/percentage fields changed"
+            NotificationMeaningfulChange.MACHINE_CHURN_ONLY -> "Only deterministic progress/percentage/timer fields changed"
             NotificationMeaningfulChange.CONTENT_CHANGED -> "Existing notification changed; uncertain changes are preserved"
         }
         val logicalSignalId = when (change) {
@@ -196,9 +201,7 @@ object NotificationSignalAnalyzer {
     private fun conversationBasis(facts: NotificationAnalysisFacts): Pair<String, String> {
         facts.shortcutId?.takeIf(String::isNotBlank)?.let { return "shortcut:$it" to "Android shortcutId" }
         val participantTokens = buildList {
-            facts.people.forEach { person ->
-                add(person.key ?: person.uri ?: person.name.orEmpty())
-            }
+            facts.people.forEach { person -> add(person.key ?: person.uri ?: person.name.orEmpty()) }
             facts.messages.mapNotNullTo(this) { it.sender?.takeIf(String::isNotBlank) }
         }.map(::normalize).filter(String::isNotBlank).distinct().sorted()
         val conversationTitle = normalize(facts.conversationTitle.orEmpty())
@@ -219,9 +222,7 @@ object NotificationSignalAnalyzer {
         val isSmsPackage = pkg.contains("messaging") || pkg.contains("mms") || pkg.contains("sms")
         val hasStructuredMessageEvidence = facts.messages.isNotEmpty()
         val hasReplyableConversationEvidence = facts.replyable && (
-            !facts.shortcutId.isNullOrBlank() ||
-                facts.people.isNotEmpty() ||
-                !facts.conversationTitle.isNullOrBlank()
+            !facts.shortcutId.isNullOrBlank() || facts.people.isNotEmpty() || !facts.conversationTitle.isNullOrBlank()
             )
         if (category == "msg" || hasStructuredMessageEvidence || hasReplyableConversationEvidence) {
             return if (isSmsPackage) RelaySignalType.SMS else RelaySignalType.HUMAN_MESSAGE
@@ -294,17 +295,18 @@ object NotificationSignalAnalyzer {
         facts.body?.let(::add)
         facts.expandedText?.let(::add)
         facts.conversationTitle?.let(::add)
-        facts.messages.forEach { message ->
-            add(listOfNotNull(message.sender, message.text).joinToString(": "))
-        }
+        facts.messages.forEach { message -> add(listOfNotNull(message.sender, message.text).joinToString(": ")) }
     }.joinToString("\n") { normalize(it) }
 
     private fun isDeterministicProgressSurface(facts: NotificationAnalysisFacts): Boolean {
         val category = facts.category.orEmpty().lowercase(Locale.ROOT)
         if (category == "progress") return true
+        val text = canonicalVisibleText(facts).lowercase(Locale.ROOT)
         if (facts.packageName == "com.android.systemui") {
-            val text = canonicalVisibleText(facts).lowercase(Locale.ROOT)
             return percentage.containsMatchIn(text) && listOf("charging", "charge", "شحن", "الشحن").any(text::contains)
+        }
+        if (category in setOf("service", "transport")) {
+            return durationClock.containsMatchIn(text) || percentage.containsMatchIn(text) || progressRatio.containsMatchIn(text)
         }
         return false
     }
