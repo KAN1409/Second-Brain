@@ -500,80 +500,153 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
 
 @Composable
 private fun StatusPill(text: String) {
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceVariant) {
-        Text(text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), style = MaterialTheme.typography.labelLarge)
+    Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.secondaryContainer) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
 @Composable
 private fun FlowMetric(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Surface(modifier = modifier, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+@Composable
+private fun DetailSection(title: String, text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, modifier = Modifier.weight(0.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, modifier = Modifier.weight(0.58f), fontWeight = FontWeight.Medium)
     }
 }
 
 @Composable
 private fun MetricRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.SemiBold)
+        Text(label, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontWeight = FontWeight.Medium)
     }
 }
-
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-@Composable
-private fun DetailSection(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyLarge)
-    }
-}
-
-private fun friendlyAppName(context: Context, packageName: String): String = runCatching {
-    val info = context.packageManager.getApplicationInfo(packageName, 0)
-    context.packageManager.getApplicationLabel(info).toString().takeIf(String::isNotBlank)
-}.getOrNull() ?: packageName.substringAfterLast('.').replaceFirstChar(Char::uppercase)
 
 private fun formatSignalTime(instant: Instant): String = signalTimeFormatter.format(instant.atZone(ZoneId.systemDefault()))
 
+private fun friendlyAppName(context: Context, packageName: String): String {
+    val packageManager = context.packageManager
+    val installedLabel = runCatching {
+        val applicationInfo = packageManager.getApplicationInfo(packageName, 0)
+        packageManager.getApplicationLabel(applicationInfo).toString().trim()
+    }.getOrNull()?.takeIf { label ->
+        label.isNotBlank() && !(label.equals("Android", ignoreCase = true) && !isAndroidFrameworkPackage(packageName))
+    }
+    if (installedLabel != null) return installedLabel
+
+    return when (packageName) {
+        "com.whatsapp" -> "WhatsApp"
+        "com.whatsapp.w4b" -> "WhatsApp Business"
+        "com.google.android.gm" -> "Gmail"
+        "com.google.android.apps.messaging" -> "Messages"
+        "com.samsung.android.messaging" -> "Samsung Messages"
+        "com.samsung.android.dialer" -> "Phone"
+        "com.android.systemui" -> "Android System"
+        "com.samsung.android.app.smartcapture" -> "Samsung Capture"
+        "com.openai.chatgpt" -> "ChatGPT"
+        "com.google.android.apps.youtube.music" -> "YouTube Music"
+        else -> packageDerivedAppName(packageName)
+    }
+}
+
+private fun isAndroidFrameworkPackage(packageName: String): Boolean =
+    packageName == "android" || packageName.startsWith("com.android.")
+
+private fun packageDerivedAppName(packageName: String): String {
+    val genericSegments = setOf("com", "org", "net", "android", "app", "apps", "mobile", "client", "release", "debug")
+    val candidate = packageName
+        .split('.')
+        .asReversed()
+        .firstOrNull { segment -> segment.isNotBlank() && segment.lowercase() !in genericSegments }
+        ?: packageName.substringAfterLast('.')
+    return candidate.replace('_', ' ').replace('-', ' ').replaceFirstChar { it.uppercase() }
+}
+
 private fun humanDeliveryLabel(state: RelayDeliveryState): String = when (state) {
-    RelayDeliveryState.FORWARDED -> "Sent to Cortex"
-    RelayDeliveryState.FILTERED -> "Filtered by Relay"
-    RelayDeliveryState.WAITING -> "Waiting for Cortex"
+    RelayDeliveryState.CAPTURED -> "Captured"
+    RelayDeliveryState.WAITING -> "Queued for Cortex"
+    RelayDeliveryState.SENT -> "Awaiting Cortex ACK"
+    RelayDeliveryState.FORWARDED -> "Delivered to Cortex"
+    RelayDeliveryState.FILTERED -> "Filtered · kept locally"
+    RelayDeliveryState.RETRYING -> "Retrying delivery"
+    RelayDeliveryState.REJECTED -> "Rejected by Cortex"
+    RelayDeliveryState.FAILED -> "Delivery failed"
 }
 
 private fun humanRouteLabel(signal: RelayRecentSignal): String = when (signal.deliveryState) {
-    RelayDeliveryState.FORWARDED -> "SENT"
-    RelayDeliveryState.FILTERED -> "FILTERED"
-    RelayDeliveryState.WAITING -> "WAITING"
+    RelayDeliveryState.FORWARDED -> "Delivered"
+    RelayDeliveryState.SENT -> "Sent"
+    RelayDeliveryState.WAITING -> "Queued"
+    RelayDeliveryState.RETRYING -> "Retrying"
+    RelayDeliveryState.REJECTED -> "Rejected"
+    RelayDeliveryState.FAILED -> "Failed"
+    RelayDeliveryState.CAPTURED -> "Approved"
+    RelayDeliveryState.FILTERED -> "Filtered"
 }
 
 private fun humanFilterLabel(state: RelayFilterState?): String = when (state) {
     RelayFilterState.FORWARD -> "Forward"
-    RelayFilterState.LOW_VALUE -> "Low value · forwarded"
-    RelayFilterState.DROP_CONFIRMED_NOISE -> "Confirmed noise · dropped"
-    null -> "No filter decision"
+    RelayFilterState.LOW_VALUE -> "Low-value · forward"
+    RelayFilterState.DROP_CONFIRMED_NOISE -> "Confirmed noise · keep local"
+    null -> "Pending assessment"
 }
 
-private fun humanSignalType(raw: String): String = raw.lowercase().split('_').joinToString(" ") { token -> token.replaceFirstChar(Char::uppercase) }
+private fun humanSignalType(type: String): String = when (type) {
+    "HUMAN_MESSAGE" -> "Message"
+    "EMAIL" -> "Email"
+    "CALL" -> "Call"
+    "SMS" -> "SMS"
+    "OTP" -> "Verification code"
+    "BANKING" -> "Banking"
+    "DELIVERY" -> "Delivery"
+    "CALENDAR" -> "Calendar"
+    "SECURITY" -> "Security"
+    "DOWNLOAD" -> "Download"
+    "SYSTEM_NOISE" -> "System state"
+    "OTHER" -> "Other"
+    else -> type.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+}
 
-private fun humanLifecycle(raw: String): String = raw.lowercase().replaceFirstChar(Char::uppercase)
+private fun humanLifecycle(state: String): String = when (state) {
+    "POSTED" -> "New"
+    "UPDATED" -> "Updated"
+    "REMOVED" -> "Removed"
+    else -> state.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+}
 
-private fun cortexResponseLabel(raw: String?): String = when (raw?.uppercase()) {
-    null, "" -> "No ACK yet"
+private fun cortexResponseLabel(status: String?): String = when (status) {
+    null, "" -> "—"
+    "READY", "HELLO_ACCEPTED" -> "Ready"
     "ACCEPTED" -> "Accepted"
-    "DUPLICATE_ACCEPTED" -> "Already accepted"
-    else -> raw.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
+    "DUPLICATE_ACCEPTED" -> "Accepted · already received"
+    "POLICY_BLOCKED" -> "Blocked by Cortex policy"
+    "EMPTY" -> "Rejected · no usable content"
+    "INVALID_EVENT" -> "Rejected · invalid signal"
+    "RAW_CAPTURE_FAILED" -> "Cortex capture failed"
+    "INGEST_FAILED" -> "Cortex ingest failed"
+    else -> status.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
 }
 
 private fun prettyJson(raw: String): String = runCatching { JSONObject(raw).toString(2) }.getOrDefault(raw)
