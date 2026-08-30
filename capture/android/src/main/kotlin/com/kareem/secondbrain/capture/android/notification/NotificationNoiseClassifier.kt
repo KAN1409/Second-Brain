@@ -24,7 +24,15 @@ data class NotificationNoiseFacts(
  */
 object NotificationNoiseClassifier {
     private val percentage = Regex("(?<!\\d)(?:100|[1-9]?\\d)%(?!\\d)")
+    private val durationClock = Regex("(?<!\\d)(?:\\d{1,2}:)?\\d{1,2}:\\d{2}(?!\\d)")
     private val chargingMarkers = listOf("charging", "charge", "شحن", "الشحن")
+    private val screenRecordingMarkers = listOf(
+        "stop recording",
+        "screen recording",
+        "screen recorder",
+        "إيقاف التسجيل",
+        "تسجيل الشاشة",
+    )
 
     fun classify(facts: NotificationNoiseFacts): RelayFilterDecision {
         if (facts.meaningfulChange == NotificationMeaningfulChange.EXACT_DUPLICATE) {
@@ -36,7 +44,7 @@ object NotificationNoiseClassifier {
         if (facts.meaningfulChange == NotificationMeaningfulChange.MACHINE_CHURN_ONLY) {
             return RelayFilterDecision(
                 state = RelayFilterState.DROP_CONFIRMED_NOISE,
-                reason = "Only deterministic progress/percentage fields changed",
+                reason = "Only deterministic progress/percentage/timer fields changed",
             )
         }
         if (facts.isGroupSummary) {
@@ -53,6 +61,23 @@ object NotificationNoiseClassifier {
             facts.category,
             facts.channelId,
         ).joinToString(" ").lowercase()
+
+        // Samsung's recorder updates the same notification once per elapsed second. On the real
+        // device this surface is not consistently tagged as an ongoing/service notification, so
+        // the generic lifecycle-only detector can conservatively miss it. Preserve the initial
+        // POST as evidence, but suppress subsequent CONTENT_CHANGED ticks when the only visible
+        // dynamic surface is the recorder clock/control text. Raw listener evidence remains intact.
+        val isSamsungRecorderTimerUpdate =
+            facts.packageName == "com.samsung.android.app.smartcapture" &&
+                facts.meaningfulChange == NotificationMeaningfulChange.CONTENT_CHANGED &&
+                durationClock.containsMatchIn(text) &&
+                screenRecordingMarkers.any(text::contains)
+        if (isSamsungRecorderTimerUpdate) {
+            return RelayFilterDecision(
+                state = RelayFilterState.DROP_CONFIRMED_NOISE,
+                reason = "Samsung screen recorder elapsed-time churn",
+            )
+        }
 
         val isSystemUi = facts.packageName == "com.android.systemui"
         val looksLikeChargingPercentage = percentage.containsMatchIn(text) &&

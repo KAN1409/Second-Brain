@@ -22,6 +22,18 @@ data class RelayMessageSnapshot(
     val occurredAt: Instant?,
 )
 
+/** Latest raw state for one Android notification identity. rawReceived still counts every callback. */
+data class RelayRawNotification(
+    val id: String,
+    val notificationKey: String,
+    val occurredAt: Instant,
+    val receivedAt: Instant,
+    val packageName: String,
+    val title: String?,
+    val body: String?,
+    val conversationTitle: String?,
+)
+
 data class RelayRecentSignal(
     val eventId: String,
     val occurredAt: Instant,
@@ -50,16 +62,14 @@ data class RelayRecentSignal(
     val deliveryDetail: String = "Stored locally",
     val cortexStatus: String? = null,
     val cortexSignalId: Long = 0,
-    /** Actual Messenger.send() ingest attempts for this event in the current process. */
     val sendAttempts: Int = 0,
-    /** Retry/failure incidents attributable to this event in the current process. */
     val deliveryIssueIncidents: Int = 0,
 )
 
 data class RelayDiagnosticSnapshot(
+    val rawReceived: Long = 0,
     val captured: Long = 0,
     val sent: Long = 0,
-    /** Number of events explicitly ACKed as accepted by Cortex. */
     val forwarded: Long = 0,
     val rejected: Long = 0,
     val filtered: Long = 0,
@@ -81,24 +91,57 @@ data class RelayDiagnosticSnapshot(
     val lastCortexSignalId: Long = 0,
     val lastAckAt: Instant? = null,
     val lastActivityAt: Instant? = null,
+    val rawNotifications: List<RelayRawNotification> = emptyList(),
     val recentSignals: List<RelayRecentSignal> = emptyList(),
 )
 
-/**
- * Process-local operational telemetry for the Relay UI.
- *
- * This is deliberately not personal memory and is not part of the Cortex wire protocol. Counters
- * and recent signals reset when the app process restarts. Local Bus V1 already returns event_id,
- * status and signal_id on ingest ACKs, so the V1 client can correlate delivery without changing the
- * wire contract.
- */
+/** Process-local operational telemetry for the Relay UI. */
 object RelayRuntimeDiagnostics {
-    private const val MAX_RECENT_SIGNALS = 20
+    private const val MAX_RECENT_SIGNALS = 250
+    private const val MAX_RAW_NOTIFICATIONS = 250
     private const val MAX_RESTORED_IDS = 128
 
     private val lock = Any()
     private val mutableState = MutableStateFlow(RelayDiagnosticSnapshot())
     val state: StateFlow<RelayDiagnosticSnapshot> = mutableState.asStateFlow()
+
+    fun markRawNotification(
+        notificationKey: String,
+        packageName: String,
+        occurredAt: Instant,
+        title: String?,
+        body: String?,
+        conversationTitle: String?,
+    ) = update { current ->
+        val now = Instant.now()
+        val sequence = current.rawReceived + 1
+        val prior = current.rawNotifications.firstOrNull { it.notificationKey == notificationKey }
+        val item = RelayRawNotification(
+            id = prior?.id ?: "$notificationKey:${now.toEpochMilli()}:$sequence",
+            notificationKey = notificationKey,
+            occurredAt = occurredAt,
+            receivedAt = now,
+            packageName = packageName,
+            title = title?.takeIf(String::isNotBlank),
+            body = body?.takeIf(String::isNotBlank),
+            conversationTitle = conversationTitle?.takeIf(String::isNotBlank),
+        )
+        current.copy(
+            rawReceived = sequence,
+            lastPackage = packageName,
+            lastActivityAt = now,
+            // Keep the dashboard spatially stable for rapidly-updating ongoing notifications
+            // (screen recorder timers, progress surfaces, etc.). Every callback is still counted
+            // above and preserved independently by RelayRawSourceLedger.
+            rawNotifications = buildList {
+                add(item)
+                current.rawNotifications.asSequence()
+                    .filterNot { it.notificationKey == notificationKey }
+                    .take(MAX_RAW_NOTIFICATIONS - 1)
+                    .forEach(::add)
+            },
+        )
+    }
 
     fun markLifecycle(state: NotificationLifecycleState, change: NotificationMeaningfulChange?) = update { current ->
         current.copy(
@@ -174,11 +217,7 @@ object RelayRuntimeDiagnostics {
         )
     }
 
-    fun markFilterDecision(
-        eventId: String,
-        packageName: String,
-        decision: RelayFilterDecision,
-    ) = update { current ->
+    fun markFilterDecision(eventId: String, packageName: String, decision: RelayFilterDecision) = update { current ->
         val now = Instant.now()
         current.copy(
             filtered = current.filtered + if (decision.state == RelayFilterState.DROP_CONFIRMED_NOISE) 1 else 0,

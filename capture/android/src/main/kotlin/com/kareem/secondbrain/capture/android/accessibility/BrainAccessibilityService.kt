@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.core.content.ContextCompat
+import com.kareem.secondbrain.capture.android.notification.RelayEvidenceIntelligence
 import com.kareem.secondbrain.core.model.CaptureMode
 import com.kareem.secondbrain.domain.AppSessionRepository
 import com.kareem.secondbrain.domain.CaptureCommand
@@ -50,6 +51,8 @@ class BrainAccessibilityService : AccessibilityService() {
             serviceScope.launch {
                 val at = Instant.now()
                 appSessions.closeOpenSession(at)?.let { previous ->
+                    RelayEvidenceIntelligence.forContext(applicationContext)
+                        .observeAppActivity(previous.packageName, at.toEpochMilli(), false)
                     captureRepository.ingest(CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false))
                 }
             }
@@ -84,6 +87,8 @@ class BrainAccessibilityService : AccessibilityService() {
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
                 serviceScope.launch {
                     appSessions.closeOpenSession(now)?.let { previous ->
+                        RelayEvidenceIntelligence.forContext(applicationContext)
+                            .observeAppActivity(previous.packageName, now.toEpochMilli(), false)
                         captureRepository.ingest(
                             CaptureCommand.AppActivity(now, previous.packageName, enteredForeground = false),
                         )
@@ -129,10 +134,13 @@ class BrainAccessibilityService : AccessibilityService() {
                 put("passwordNodesSkipped", extracted.passwordNodesSkipped)
                 put("source", "accessibility_tree")
             }.toString()
+            val observedAt = Instant.now()
+            RelayEvidenceIntelligence.forContext(applicationContext)
+                .observeScreen(activePackage, extracted.text, observedAt.toEpochMilli())
 
             captureRepository.ingest(
                 CaptureCommand.Screen(
-                    occurredAt = Instant.now(),
+                    occurredAt = observedAt,
                     packageName = activePackage,
                     accessibleText = extracted.text,
                     metadataJson = metadata,
@@ -207,10 +215,12 @@ class BrainAccessibilityService : AccessibilityService() {
             ?: fallback
 
     private suspend fun trackForegroundPackage(packageName: String, at: Instant) {
+        val intelligence = RelayEvidenceIntelligence.forContext(applicationContext)
         val policy = policyRepository.get(packageName)
         if (!policy.usage) {
             val previous = appSessions.closeOpenSession(at)
             previous?.let {
+                intelligence.observeAppActivity(it.packageName, at.toEpochMilli(), false)
                 captureRepository.ingest(CaptureCommand.AppActivity(at, it.packageName, enteredForeground = false))
             }
             return
@@ -218,8 +228,10 @@ class BrainAccessibilityService : AccessibilityService() {
 
         val transition = appSessions.switchForeground(packageName, at) ?: return
         transition.previous?.let { previous ->
+            intelligence.observeAppActivity(previous.packageName, at.toEpochMilli(), false)
             captureRepository.ingest(CaptureCommand.AppActivity(at, previous.packageName, enteredForeground = false))
         }
+        intelligence.observeAppActivity(packageName, at.toEpochMilli(), true)
         captureRepository.ingest(CaptureCommand.AppActivity(at, packageName, enteredForeground = true))
     }
 

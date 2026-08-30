@@ -10,7 +10,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.SystemClock
 import android.util.Log
+import com.kareem.secondbrain.capture.android.notification.RelayActionRuntimeRegistry
 import com.kareem.secondbrain.domain.CaptureCommand
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,20 +25,19 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Optional live tunnel into Cortex with a disk-backed delivery outbox.
  *
- * Relay remains authoritative for capture. Events are offered to Cortex only after local storage
- * succeeds, and connector failure can never roll back or block that local capture.
- *
- * Wire compatibility is intentionally frozen at Local Bus V1 / CORTEX_INGEST_V1. V1 already
- * returns event_id/status/signal_id for ingest replies, so a durable delivery copy is removed only
- * after a correlated Cortex ACK or explicit terminal rejection. Process death can therefore replay
- * the same event_id safely instead of losing the evidence.
+ * Local Bus V1 remains the compatibility baseline. Relay advertises optional v2 capabilities in an
+ * additional hello field; it sends CORTEX_SIGNAL_V2 only if Cortex explicitly selects it. Existing
+ * Cortex builds therefore continue receiving the validated CORTEX_INGEST_V1 event unchanged.
  */
 object CortexConnectorClient {
     private const val TAG = "CortexConnector"
     private const val CORTEX_PACKAGE = "com.kareem.cortex"
     private const val CORTEX_SERVICE = "com.kareem.cortex.CortexLocalBusService"
     private const val ACTION_BIND = "com.kareem.cortex.LOCAL_BUS_V1"
-    private const val PROTOCOL = "CORTEX_INGEST_V1"
+    private const val CORTEX_REBUILD_PACKAGE = "com.kareem.cortex.rebuild"
+    private const val CORTEX_REBUILD_SERVICE = "com.kareem.cortex.rebuild.CortexLocalBusService"
+    private const val ACTION_BIND_REBUILD = "com.kareem.cortex.rebuild.LOCAL_BUS_V1"
+    private const val PROTOCOL_V1 = "CORTEX_INGEST_V1"
     private const val CONNECTOR_ID = "second_brain"
 
     private const val MSG_HELLO = 1
@@ -52,6 +53,7 @@ object CortexConnectorClient {
 
     private const val KEY_CONNECTOR_ID = "connector_id"
     private const val KEY_CAPABILITIES_JSON = "capabilities_json"
+    private const val KEY_RELAY_CAPABILITIES_JSON = "relay_capabilities_json"
     private const val KEY_EVENT_JSON = "event_json"
     private const val KEY_EVENT_ID = "event_id"
     private const val KEY_STATUS = "status"
@@ -77,7 +79,9 @@ object CortexConnectorClient {
     @Volatile private var appContext: Context? = null
     @Volatile private var endpointReady: Boolean = false
     @Volatile private var inFlight: PendingEvent? = null
+    @Volatile private var inFlightSentAtElapsedMs: Long = 0L
     @Volatile private var outboxLoaded: Boolean = false
+    @Volatile private var selectedProtocol: String = PROTOCOL_V1
     private var outbox: DurableRelayOutbox? = null
 
     private lateinit var connection: ServiceConnection
@@ -98,8 +102,12 @@ object CortexConnectorClient {
         when (message.what) {
             MSG_ACK -> {
                 if (eventId.isEmpty()) {
+                    selectedProtocol = data.getString(RelayV2Protocol.KEY_SELECTED_PROTOCOL)
+                        ?.takeIf { it == RelayV2Protocol.SIGNAL_PROTOCOL }
+                        ?: PROTOCOL_V1
                     endpointReady = true
                     retryAttempt.set(0)
+                    RelayV2OperationalMetrics.markProtocol(selectedProtocol)
                     RelayRuntimeDiagnostics.markEndpointAck(status.ifEmpty { "READY" })
                     drain()
                 } else {
@@ -118,6 +126,14 @@ object CortexConnectorClient {
                 }
                 true
             }
+            RelayV2Protocol.MSG_ACTION_REQUEST -> {
+                handleActionRequest(message)
+                true
+            }
+            RelayV2Protocol.MSG_POLICY_UPDATE -> {
+                handlePolicyUpdate(message)
+                true
+            }
             else -> false
         }
     })
@@ -127,6 +143,7 @@ object CortexConnectorClient {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 remote = service?.let(::Messenger)
                 endpointReady = false
+                selectedProtocol = PROTOCOL_V1
                 retryAttempt.set(0)
                 mainHandler.removeCallbacks(retryRunnable)
                 RelayRuntimeDiagnostics.markConnection(
@@ -139,7 +156,9 @@ object CortexConnectorClient {
                 val interrupted = inFlight
                 remote = null
                 endpointReady = false
+                selectedProtocol = PROTOCOL_V1
                 inFlight = null
+                inFlightSentAtElapsedMs = 0L
                 cancelAckTimeout()
                 if (interrupted != null) {
                     RelayRuntimeDiagnostics.markRetry(
@@ -163,6 +182,8 @@ object CortexConnectorClient {
         }
     }
 
+    fun negotiatedProtocol(): String = selectedProtocol
+
     /** Restore durable pending work whenever the Relay process starts. */
     fun start(context: Context) {
         val applicationContext = context.applicationContext
@@ -182,6 +203,7 @@ object CortexConnectorClient {
                     queue.addLast(PendingEvent(entry.eventId, entry.raw))
                 }
                 outboxLoaded = true
+                updateOutboxMetrics(loaded.entries)
             }
             durableWaitingCountLocked()
         }
@@ -233,21 +255,37 @@ object CortexConnectorClient {
     private fun ensureBound(context: Context) {
         if (remote != null || !bindActive.compareAndSet(false, true)) return
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)
-        try {
-            val intent = Intent(ACTION_BIND).apply { component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE) }
-            if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
-                bindActive.set(false)
-                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-                markFailureForPending("Cortex Local Bus bind was rejected; durable event retained")
-                scheduleReconnect()
+
+        // Prefer the fresh Cortex rebuild endpoint, while preserving the established legacy Local
+        // Bus component as a compatibility fallback. Both endpoints are explicit and bounded.
+        val endpoints = arrayOf(
+            Triple(CORTEX_REBUILD_PACKAGE, CORTEX_REBUILD_SERVICE, ACTION_BIND_REBUILD),
+            Triple(CORTEX_PACKAGE, CORTEX_SERVICE, ACTION_BIND),
+        )
+        var accepted = false
+        var lastFailure = "Cortex Local Bus endpoint unavailable"
+        for ((packageName, serviceName, action) in endpoints) {
+            try {
+                val intent = Intent(action).apply {
+                    component = ComponentName(packageName, serviceName)
+                }
+                if (context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+                    accepted = true
+                    break
+                }
+                lastFailure = "$packageName rejected the Local Bus bind"
+            } catch (t: Throwable) {
+                Log.w(TAG, "Cortex bind failed for $packageName: ${t.javaClass.simpleName}")
+                lastFailure = "$packageName bind failed: ${t.javaClass.simpleName}"
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")
+        }
+
+        if (!accepted) {
             bindActive.set(false)
             remote = null
             endpointReady = false
             RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-            markFailureForPending("Cortex bind failed: ${t.javaClass.simpleName}; durable event retained")
+            markFailureForPending("$lastFailure; durable event retained")
             scheduleReconnect()
         }
     }
@@ -259,7 +297,10 @@ object CortexConnectorClient {
             message.replyTo = replies
             message.data = Bundle().apply {
                 putString(KEY_CONNECTOR_ID, CONNECTOR_ID)
+                // Preserve the exact V1 capability field for old Cortex builds.
                 putString(KEY_CAPABILITIES_JSON, JSONArray().put("NOTIFICATIONS").toString())
+                // New Cortex builds can opt in after inspecting this additional field.
+                putString(KEY_RELAY_CAPABILITIES_JSON, RelayV2Protocol.advertisedCapabilities().toString())
             }
             target.send(message)
         } catch (t: Throwable) {
@@ -289,14 +330,22 @@ object CortexConnectorClient {
             } ?: return
             inFlight = pending
             try {
-                val message = Message.obtain(null, MSG_INGEST)
+                val useV2 = selectedProtocol == RelayV2Protocol.SIGNAL_PROTOCOL
+                val payload = if (useV2) {
+                    RelayV2Protocol.fromV1(JSONObject(pending.raw)).toString()
+                } else {
+                    pending.raw
+                }
+                val message = Message.obtain(null, if (useV2) RelayV2Protocol.MSG_INGEST_V2 else MSG_INGEST)
                 message.replyTo = replies
-                message.data = Bundle().apply { putString(KEY_EVENT_JSON, pending.raw) }
+                message.data = Bundle().apply { putString(KEY_EVENT_JSON, payload) }
+                inFlightSentAtElapsedMs = SystemClock.elapsedRealtime()
                 target.send(message)
                 RelayRuntimeDiagnostics.markSentAwaitingAck(pending.eventId, durableWaitingCount())
                 scheduleAckTimeout(pending)
             } catch (t: Throwable) {
                 inFlight = null
+                inFlightSentAtElapsedMs = 0L
                 val reason = "Cortex send failed: ${t.javaClass.simpleName}; retry scheduled"
                 Log.w(TAG, reason)
                 RelayRuntimeDiagnostics.markRetry(pending.eventId, reason)
@@ -313,10 +362,13 @@ object CortexConnectorClient {
             RelayRuntimeDiagnostics.markFailure("Unexpected Cortex ACK for $wireEventId; current=${pending?.wireEventId ?: "none"}")
             return
         }
+        val sentAt = inFlightSentAtElapsedMs
         cancelAckTimeout()
         if (!removeDurableHead(pending, "ACK")) return
         inFlight = null
+        inFlightSentAtElapsedMs = 0L
         retryAttempt.set(0)
+        if (sentAt > 0L) RelayV2OperationalMetrics.markAckLatency(SystemClock.elapsedRealtime() - sentAt)
         val waiting = synchronized(queueLock) { refillMemoryQueueLocked() }
         RelayRuntimeDiagnostics.markForwarded(pending.eventId, waiting, status, signalId)
         drain()
@@ -330,6 +382,7 @@ object CortexConnectorClient {
         }
         cancelAckTimeout()
         inFlight = null
+        inFlightSentAtElapsedMs = 0L
         if (terminalRejection(status)) {
             if (!removeDurableHead(pending, "terminal rejection")) return
             val waiting = synchronized(queueLock) { refillMemoryQueueLocked() }
@@ -344,6 +397,42 @@ object CortexConnectorClient {
         }
     }
 
+    private fun handleActionRequest(message: Message) {
+        val context = appContext ?: return
+        val responder = message.replyTo ?: remote ?: return
+        val raw = message.data?.getString(RelayV2Protocol.KEY_REQUEST_JSON).orEmpty()
+        val resultJson = try {
+            if (!endpointReady) error("Cortex endpoint is not ready")
+            val request = RelayV2Protocol.parseActionRequest(raw)
+            RelayActionRuntimeRegistry.execute(context, request).toJson()
+        } catch (t: Throwable) {
+            JSONObject().apply {
+                put("status", "INVALID_ACTION_REQUEST")
+                put("detail", "${t.javaClass.simpleName}${t.message?.let { ": $it" }.orEmpty()}")
+            }
+        }
+        sendControlResult(responder, RelayV2Protocol.MSG_ACTION_RESULT, resultJson)
+    }
+
+    private fun handlePolicyUpdate(message: Message) {
+        val context = appContext ?: return
+        val responder = message.replyTo ?: remote ?: return
+        val raw = message.data?.getString(RelayV2Protocol.KEY_REQUEST_JSON).orEmpty()
+        val result = RelayMechanicalPolicyStore.forContext(context).applyUpdate(raw)
+        sendControlResult(responder, RelayV2Protocol.MSG_POLICY_RESULT, RelayV2Protocol.policyResultJson(result))
+    }
+
+    private fun sendControlResult(target: Messenger, what: Int, json: JSONObject) {
+        runCatching {
+            val result = Message.obtain(null, what)
+            result.replyTo = replies
+            result.data = Bundle().apply { putString(RelayV2Protocol.KEY_RESULT_JSON, json.toString()) }
+            target.send(result)
+        }.onFailure { error ->
+            RelayRuntimeDiagnostics.markFailure("Could not return Relay control result: ${error.javaClass.simpleName}")
+        }
+    }
+
     private fun removeDurableHead(pending: PendingEvent, reason: String): Boolean {
         val store = synchronized(queueLock) { outbox }
         try {
@@ -352,12 +441,14 @@ object CortexConnectorClient {
                 val head = queue.peekFirst()
                 if (head != null && head.eventId == pending.eventId) queue.removeFirst()
             }
+            updateOutboxMetrics(store?.loadAll()?.entries.orEmpty())
             return true
         } catch (t: Throwable) {
             inFlight = null
-            val message = "Could not retire durable outbox entry after $reason: ${t.javaClass.simpleName}; same event retained"
-            Log.e(TAG, message, t)
-            RelayRuntimeDiagnostics.markRetry(pending.eventId, message)
+            inFlightSentAtElapsedMs = 0L
+            val errorMessage = "Could not retire durable outbox entry after $reason: ${t.javaClass.simpleName}; same event retained"
+            Log.e(TAG, errorMessage, t)
+            RelayRuntimeDiagnostics.markRetry(pending.eventId, errorMessage)
             resetBindingAndRetry()
             return false
         }
@@ -376,6 +467,7 @@ object CortexConnectorClient {
         mainHandler.postDelayed({
             if (inFlight !== pending) return@postDelayed
             inFlight = null
+            inFlightSentAtElapsedMs = 0L
             RelayRuntimeDiagnostics.markRetry(pending.eventId, "Cortex ACK timeout; same durable event retained for retry")
             resetBindingAndRetry()
         }, ackTimeoutToken, ACK_TIMEOUT_MS)
@@ -388,8 +480,11 @@ object CortexConnectorClient {
     private fun resetBindingAndRetry() {
         cancelAckTimeout()
         endpointReady = false
+        selectedProtocol = PROTOCOL_V1
         remote = null
         inFlight = null
+        inFlightSentAtElapsedMs = 0L
+        RelayV2OperationalMetrics.markProtocol(PROTOCOL_V1)
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
         val context = appContext
         if (bindActive.getAndSet(false) && context != null) runCatching { context.unbindService(connection) }
@@ -415,12 +510,7 @@ object CortexConnectorClient {
 
     private fun hasPending(): Boolean = durableWaitingCount() > 0
 
-    /**
-     * Fill only a bounded RAM window. Anything beyond the window remains safely on disk and is
-     * pulled in as earlier events are ACKed.
-     *
-     * Must be called while holding queueLock. Returns total durable pending count, not RAM count.
-     */
+    /** Fill only a bounded RAM window; excess pending work remains safely on disk. */
     private fun refillMemoryQueueLocked(): Int {
         val store = outbox ?: return queue.size
         val loaded = store.loadAll()
@@ -432,12 +522,23 @@ object CortexConnectorClient {
                 queue.addLast(PendingEvent(entry.eventId, entry.raw))
                 known += entry.eventId
             }
+        updateOutboxMetrics(loaded.entries)
         return loaded.entries.size
     }
 
     private fun durableWaitingCount(): Int = synchronized(queueLock) { durableWaitingCountLocked() }
 
-    private fun durableWaitingCountLocked(): Int = outbox?.loadAll()?.entries?.size ?: queue.size
+    private fun durableWaitingCountLocked(): Int {
+        val entries = outbox?.loadAll()?.entries.orEmpty()
+        updateOutboxMetrics(entries)
+        return if (outbox == null) queue.size else entries.size
+    }
+
+    private fun updateOutboxMetrics(entries: List<DurableOutboxEntry>) {
+        val now = System.currentTimeMillis()
+        val oldestAge = entries.minOfOrNull { it.enqueuedAtEpochMs }?.let { (now - it).coerceAtLeast(0L) }
+        RelayV2OperationalMetrics.markOutbox(entries.size, oldestAge)
+    }
 
     private fun buildNotificationEvent(command: CaptureCommand.Notification, storedEventId: String): JSONObject {
         val metadata = parseMetadata(command.metadataJson)
@@ -501,7 +602,7 @@ object CortexConnectorClient {
             }
         }
         return JSONObject().apply {
-            put("protocol", PROTOCOL)
+            put("protocol", PROTOCOL_V1)
             put("event_id", "sb_$storedEventId")
             put("connector_id", CONNECTOR_ID)
             put("source_type", "NOTIFICATION")
@@ -532,11 +633,13 @@ object CortexConnectorClient {
             "androidUserId",
             "groupKey",
             "isGroup",
+            "isGroupSummary",
             "isOngoing",
             "category",
             "channelId",
             "shortcutId",
             "replyable",
+            "hasContentIntent",
         ).forEach { key ->
             if (source.has(key)) {
                 if (source.isNull(key)) put(key, JSONObject.NULL) else put(key, source.opt(key))
@@ -545,6 +648,12 @@ object CortexConnectorClient {
 
         source.optJSONObject("relay_normalization")?.let { normalization ->
             put("relay_normalization", JSONObject(normalization.toString()))
+        }
+        source.optJSONObject("relay_semantic_v2")?.let { semantic ->
+            put("relay_semantic_v2", JSONObject(semantic.toString()))
+        }
+        source.optJSONArray("relay_action_capabilities_v1")?.let { actions ->
+            put("relay_action_capabilities_v1", JSONArray(actions.toString()))
         }
         source.optJSONArray("relay_entities")?.let { entities ->
             put("relay_entities", JSONArray().apply {

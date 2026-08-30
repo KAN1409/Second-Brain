@@ -2,9 +2,11 @@
 set -euo pipefail
 
 PACKAGE="com.kareem.secondbrain"
+EXPECTED_VERSION_CODE="23"
+EXPECTED_VERSION_NAME="2.0.0-candidate4"
 EXPECTED_CERT_SHA256="fd402eefcec5b1576d6e7b1e5663a835d4c439d03baaa04506dd662e4b4c7d74"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v1.0.1-permanent.apk}"
+SIGNED_APK="${SECOND_BRAIN_DEVICE_APK:-/sdcard/Download/Cortex-Relay-v2.0.0-candidate4-permanent.apk}"
 INSTALLED_COPY="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/cortex-relay-installed-base.apk"
 
 fail() {
@@ -50,10 +52,7 @@ resolve_installed_path() {
 
   for attempt in 1 2 3; do
     output="$(rish -c "pm path $PACKAGE" 2>/dev/null || true)"
-    pkg_path="$(printf '%s\n' "$output" \
-      | tr -d '\r' \
-      | sed -n 's/^package://p' \
-      | head -n1)"
+    pkg_path="$(printf '%s\n' "$output" | tr -d '\r' | sed -n 's/^package://p' | head -n1)"
     [ -n "$pkg_path" ] && {
       printf '%s\n' "$pkg_path"
       return 0
@@ -62,10 +61,7 @@ resolve_installed_path() {
   done
 
   output="$(rish -c "cmd package path $PACKAGE" 2>/dev/null || true)"
-  pkg_path="$(printf '%s\n' "$output" \
-    | tr -d '\r' \
-    | sed -n 's/^package://p' \
-    | head -n1)"
+  pkg_path="$(printf '%s\n' "$output" | tr -d '\r' | sed -n 's/^package://p' | head -n1)"
   [ -n "$pkg_path" ] || return 1
   printf '%s\n' "$pkg_path"
 }
@@ -79,15 +75,29 @@ copy_installed_base() {
   [ -s "$INSTALLED_COPY" ] || fail "Installed APK copy is empty"
 }
 
-echo "==> Guard 1/5: verify currently installed permanent signer"
+installed_version_code() {
+  rish -c "dumpsys package $PACKAGE" 2>/dev/null | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -n1
+}
+
+installed_version_name() {
+  rish -c "dumpsys package $PACKAGE" 2>/dev/null | sed -n 's/.*versionName=//p' | head -n1 | tr -d '\r'
+}
+
+echo "==> Guard 1/5: verify currently installed Relay identity"
 copy_installed_base
 CURRENT_CERT="$(cert_of_apk "$INSTALLED_COPY")"
 [ "$CURRENT_CERT" = "$EXPECTED_CERT_SHA256" ] \
   || fail "Installed signer mismatch. Expected $EXPECTED_CERT_SHA256, got ${CURRENT_CERT:-<missing>}. No install attempted."
+CURRENT_CODE="$(installed_version_code)"
+[ -n "$CURRENT_CODE" ] || fail "Could not resolve installed versionCode"
+if [ "$CURRENT_CODE" -gt "$EXPECTED_VERSION_CODE" ]; then
+  fail "Installed versionCode $CURRENT_CODE is newer than candidate $EXPECTED_VERSION_CODE; refusing downgrade"
+fi
 echo "Installed signer OK: $CURRENT_CERT"
+echo "Installed version: $CURRENT_CODE / $(installed_version_name)"
 
 echo
-echo "==> Build 2/5: Cortex Relay v1.0.1 source-label hotfix release"
+echo "==> Build 2/5: Cortex Relay $EXPECTED_VERSION_NAME release"
 cd "$ROOT_DIR"
 ./gradlew \
   -Dorg.gradle.jvmargs='-Xmx1536m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8' \
@@ -112,7 +122,7 @@ echo "Signed APK signer OK: $SIGNED_CERT"
 
 echo
 echo "==> Install 4/5: update-in-place only (NO UNINSTALL)"
-TMP_REMOTE="/data/local/tmp/Cortex-Relay-v1.0.1-permanent.apk"
+TMP_REMOTE="/data/local/tmp/Cortex-Relay-v2.0.0-candidate4-permanent.apk"
 cat "$SIGNED_APK" | rish -c "cat > '$TMP_REMOTE'" || fail "Failed to stage APK in /data/local/tmp"
 INSTALL_OUT="$(rish -c "chmod 644 '$TMP_REMOTE'; pm install -r '$TMP_REMOTE'; rc=\$?; rm -f '$TMP_REMOTE'; exit \$rc" 2>&1)" || {
   printf '%s\n' "$INSTALL_OUT"
@@ -122,7 +132,11 @@ printf '%s\n' "$INSTALL_OUT"
 printf '%s\n' "$INSTALL_OUT" | grep -q 'Success' || fail "Package manager did not report Success"
 
 echo
-echo "==> Verify 5/5: installed package + signer"
+echo "==> Verify 5/5: installed version + permanent signer"
+FINAL_CODE="$(installed_version_code)"
+FINAL_NAME="$(installed_version_name)"
+[ "$FINAL_CODE" = "$EXPECTED_VERSION_CODE" ] || fail "Post-install versionCode mismatch: $FINAL_CODE"
+[ "$FINAL_NAME" = "$EXPECTED_VERSION_NAME" ] || fail "Post-install versionName mismatch: $FINAL_NAME"
 rish -c "dumpsys package $PACKAGE | grep -E 'versionCode=|versionName=' | head -n2"
 copy_installed_base
 FINAL_CERT="$(cert_of_apk "$INSTALLED_COPY")"
@@ -134,4 +148,4 @@ echo "Installed signer OK: $FINAL_CERT"
 echo "APK SHA-256: $(sha256sum "$SIGNED_APK" | awk '{print $1}')"
 echo "APK: $SIGNED_APK"
 echo
-echo "CORTEX_RELAY_V1_0_1_HOTFIX_UPDATE_SUCCESS"
+echo "CORTEX_RELAY_V2_CANDIDATE4_UPDATE_SUCCESS"

@@ -23,8 +23,6 @@ import androidx.compose.ui.unit.dp
 fun CaptureScreen(
     onAddNote: (String) -> Unit,
     onAddLink: (String) -> Unit,
-    onStartVoice: () -> Unit,
-    onStopVoice: () -> Unit,
     onPickImage: () -> Unit,
     onPickFile: () -> Unit,
     onBack: () -> Unit,
@@ -32,7 +30,6 @@ fun CaptureScreen(
 ) {
     var note by remember { mutableStateOf("") }
     var link by remember { mutableStateOf("") }
-    var recording by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier.fillMaxSize().padding(24.dp),
@@ -42,17 +39,6 @@ fun CaptureScreen(
             OutlinedButton(onClick = onBack) { Text("Back") }
             Text("Capture", style = MaterialTheme.typography.headlineMedium)
         }
-
-        Text("Voice memory", style = MaterialTheme.typography.titleMedium)
-        Button(
-            onClick = {
-                if (recording) onStopVoice() else onStartVoice()
-                recording = !recording
-            },
-        ) {
-            Text(if (recording) "Stop recording" else "Start recording")
-        }
-        if (recording) Text("Recording is active and visible in Android notifications.")
 
         Text("Import", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

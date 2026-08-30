@@ -3,14 +3,16 @@ package com.kareem.secondbrain.app
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.kareem.secondbrain.capture.android.connector.CortexConnectorClient
 import com.kareem.secondbrain.capture.android.connector.RelayDiagnosticSnapshot
+import com.kareem.secondbrain.capture.android.connector.RelayV2OperationalMetrics
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
-/** Shareable process diagnostic for joining Relay state to Cortex by sb_<eventId>. */
+/** Shareable sanitized diagnostic for joining Relay state to Cortex by sb_<eventId>. */
 internal object RelayDiagnosticExporter {
     fun share(context: Context, snapshot: RelayDiagnosticSnapshot) {
         val directory = File(context.cacheDir, "relay-diagnostics").apply { mkdirs() }
@@ -27,11 +29,13 @@ internal object RelayDiagnosticExporter {
     }
 
     private fun build(context: Context, s: RelayDiagnosticSnapshot): JSONObject = JSONObject().apply {
-        put("schema", "CORTEX_RELAY_DIAGNOSTIC_V1")
+        val v2 = RelayV2OperationalMetrics.snapshot()
+        put("schema", "CORTEX_RELAY_DIAGNOSTIC_V2")
         put("generated_at", Instant.now().toString())
         put("package", context.packageName)
         put("app_label", "Cortex Relay")
-        put("protocol", "CORTEX_INGEST_V1")
+        put("protocol", CortexConnectorClient.negotiatedProtocol())
+        put("v1_fallback_protocol", "CORTEX_INGEST_V1")
         put("connector_id", "second_brain")
         put("connection_state", s.connectionState.name)
         put("captured", s.captured)
@@ -42,9 +46,7 @@ internal object RelayDiagnosticExporter {
         put("filtered", s.filtered)
         put("low_value_forwarded", s.lowValueForwarded)
         put("waiting_or_in_flight", s.waiting)
-        put("restored_pending_event_ids", JSONArray().apply {
-            s.restoredPendingEventIds.forEach { put("sb_$it") }
-        })
+        put("restored_pending_event_ids", JSONArray().apply { s.restoredPendingEventIds.forEach { put("sb_$it") } })
         put("failed_or_retry_events", s.failedRetries)
         put("delivery_issue_incidents", s.failedRetries)
         put("lifecycle", JSONObject().apply {
@@ -54,13 +56,32 @@ internal object RelayDiagnosticExporter {
             put("exact_duplicate_updates_suppressed", s.duplicateUpdatesSuppressed)
             put("machine_churn_updates_suppressed", s.machineChurnSuppressed)
         })
+        put("v2_observability", JSONObject().apply {
+            put("negotiated_protocol", v2.negotiatedProtocol)
+            put("protocol_negotiated_at", v2.protocolNegotiatedAt?.toString() ?: JSONObject.NULL)
+            put("last_ack_latency_ms", v2.lastAckLatencyMs ?: JSONObject.NULL)
+            put("average_ack_latency_ms", v2.averageAckLatencyMs ?: JSONObject.NULL)
+            put("max_ack_latency_ms", v2.maxAckLatencyMs ?: JSONObject.NULL)
+            put("ack_latency_samples", v2.ackLatencySamples)
+            put("outbox_count", v2.outboxCount)
+            put("oldest_pending_age_ms", v2.oldestPendingAgeMs ?: JSONObject.NULL)
+            put("forensic_record_count", v2.forensicRecordCount)
+            put("forensic_bytes", v2.forensicBytes)
+            put("replay_runs", v2.replayRuns)
+            put("replay_failures", v2.replayFailures)
+            put("policy_version", v2.policyVersion)
+            put("action_requests", v2.actionRequests)
+            put("action_succeeded", v2.actionSucceeded)
+            put("action_failed", v2.actionFailed)
+            put("last_successful_delivery_at", v2.lastSuccessfulDeliveryAt?.toString() ?: JSONObject.NULL)
+            put("last_action_at", v2.lastActionAt?.toString() ?: JSONObject.NULL)
+        })
         put("counter_semantics", JSONObject().apply {
             put("captured", "Locally stored meaningful notification evidence events. Incremented once per stored event.")
             put("send_attempts", "Actual Messenger.send() ingest attempts. Retries can make this greater than captured.")
             put("delivered_cortex_ack", "Events accepted only after a correlated Cortex ACK for the same event_id.")
             put("delivery_issue_incidents", "Retry/failure incidents, not unique events; one event can increment this more than once.")
-            put("restored_pending_event_ids", "Exact V1 event ids recovered from the durable outbox when this Relay process started.")
-            put("lifecycle_updated", "Android updates observed for an existing notification identity, including updates later suppressed as exact duplicates/churn.")
+            put("restored_pending_event_ids", "Exact event ids recovered from the durable outbox when this Relay process started.")
         })
         put("last_package", s.lastPackage ?: JSONObject.NULL)
         put("last_filter_state", s.lastFilterState?.name ?: JSONObject.NULL)
@@ -88,8 +109,6 @@ internal object RelayDiagnosticExporter {
                     put("captured_at", signal.capturedAt.toString())
                     put("updated_at", signal.updatedAt.toString())
                     put("source_package", signal.packageName)
-                    // Diagnostic export intentionally omits title/body/message content. Stable
-                    // normalized identities plus delivery/lifecycle state are enough for device acceptance.
                     put("filter_state", signal.filterState?.name ?: JSONObject.NULL)
                     put("filter_reason", signal.filterReason ?: JSONObject.NULL)
                     put("delivery_state", signal.deliveryState.name)

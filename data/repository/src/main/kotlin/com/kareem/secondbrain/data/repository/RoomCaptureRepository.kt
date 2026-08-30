@@ -156,7 +156,6 @@ class RoomCaptureRepository(
             is CaptureCommand.Link -> listOfNotNull(command.title, command.url).joinToString("\n")
             is CaptureCommand.Share -> command.text.orEmpty()
             is CaptureCommand.File -> command.displayName.orEmpty()
-            is CaptureCommand.Voice -> command.assetId
             is CaptureCommand.Image -> command.assetId
             is CaptureCommand.AppActivity -> if (command.enteredForeground) "FOREGROUND" else "BACKGROUND"
             else -> ""
@@ -165,7 +164,6 @@ class RoomCaptureRepository(
         val hash = TextFingerprint.sha256(normalized.ifBlank { command.toString() })
         val source = when (command) {
             is CaptureCommand.AppActivity -> SourceType.APP_ACTIVITY
-            is CaptureCommand.Voice -> SourceType.VOICE
             is CaptureCommand.Image -> SourceType.IMAGE
             is CaptureCommand.Share -> SourceType.SHARE
             is CaptureCommand.Note -> SourceType.NOTE
@@ -177,7 +175,6 @@ class RoomCaptureRepository(
             is CaptureCommand.AppActivity -> MemoryKind.APP_ACTIVITY
             is CaptureCommand.Note -> MemoryKind.NOTE
             is CaptureCommand.Link -> MemoryKind.WEB_LINK
-            is CaptureCommand.Voice -> MemoryKind.VOICE_TRANSCRIPT
             is CaptureCommand.Image -> MemoryKind.OCR
             is CaptureCommand.Share -> MemoryKind.NOTE
             is CaptureCommand.File -> MemoryKind.NOTE
@@ -190,12 +187,11 @@ class RoomCaptureRepository(
             else -> null
         }
         val assetId = when (command) {
-            is CaptureCommand.Voice -> command.assetId
             is CaptureCommand.Image -> command.assetId
             is CaptureCommand.File -> command.assetId
             else -> null
         }
-        if (command is CaptureCommand.Image || command is CaptureCommand.Voice) {
+        if (command is CaptureCommand.Image) {
             if (assetId != null && events.latestBySourceAndAssetId(source.name, assetId) != null) {
                 return CaptureResult.Ignored(IgnoreReason.EXACT_DUPLICATE)
             }

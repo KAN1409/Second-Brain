@@ -28,4 +28,5 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
 }
