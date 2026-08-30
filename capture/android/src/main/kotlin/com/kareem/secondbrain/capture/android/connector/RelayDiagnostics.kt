@@ -22,6 +22,18 @@ data class RelayMessageSnapshot(
     val occurredAt: Instant?,
 )
 
+/** Exact process-local notification observation before Relay dedupe/filter/routing. */
+data class RelayRawNotification(
+    val id: String,
+    val notificationKey: String,
+    val occurredAt: Instant,
+    val receivedAt: Instant,
+    val packageName: String,
+    val title: String?,
+    val body: String?,
+    val conversationTitle: String?,
+)
+
 data class RelayRecentSignal(
     val eventId: String,
     val occurredAt: Instant,
@@ -57,6 +69,8 @@ data class RelayRecentSignal(
 )
 
 data class RelayDiagnosticSnapshot(
+    /** Every NotificationListener callback observed before Relay processing. */
+    val rawReceived: Long = 0,
     val captured: Long = 0,
     val sent: Long = 0,
     /** Number of events explicitly ACKed as accepted by Cortex. */
@@ -81,6 +95,7 @@ data class RelayDiagnosticSnapshot(
     val lastCortexSignalId: Long = 0,
     val lastAckAt: Instant? = null,
     val lastActivityAt: Instant? = null,
+    val rawNotifications: List<RelayRawNotification> = emptyList(),
     val recentSignals: List<RelayRecentSignal> = emptyList(),
 )
 
@@ -88,17 +103,48 @@ data class RelayDiagnosticSnapshot(
  * Process-local operational telemetry for the Relay UI.
  *
  * This is deliberately not personal memory and is not part of the Cortex wire protocol. Counters
- * and recent signals reset when the app process restarts. Local Bus V1 already returns event_id,
- * status and signal_id on ingest ACKs, so the V1 client can correlate delivery without changing the
- * wire contract.
+ * and recent feeds reset when the app process restarts. Raw notifications are captured before
+ * dedupe/filter/routing so the UI can show exactly what Android delivered to Relay this session.
  */
 object RelayRuntimeDiagnostics {
     private const val MAX_RECENT_SIGNALS = 250
+    private const val MAX_RAW_NOTIFICATIONS = 250
     private const val MAX_RESTORED_IDS = 128
 
     private val lock = Any()
     private val mutableState = MutableStateFlow(RelayDiagnosticSnapshot())
     val state: StateFlow<RelayDiagnosticSnapshot> = mutableState.asStateFlow()
+
+    fun markRawNotification(
+        notificationKey: String,
+        packageName: String,
+        occurredAt: Instant,
+        title: String?,
+        body: String?,
+        conversationTitle: String?,
+    ) = update { current ->
+        val now = Instant.now()
+        val sequence = current.rawReceived + 1
+        val item = RelayRawNotification(
+            id = "$notificationKey:${now.toEpochMilli()}:$sequence",
+            notificationKey = notificationKey,
+            occurredAt = occurredAt,
+            receivedAt = now,
+            packageName = packageName,
+            title = title?.takeIf(String::isNotBlank),
+            body = body?.takeIf(String::isNotBlank),
+            conversationTitle = conversationTitle?.takeIf(String::isNotBlank),
+        )
+        current.copy(
+            rawReceived = sequence,
+            lastPackage = packageName,
+            lastActivityAt = now,
+            rawNotifications = buildList {
+                add(item)
+                current.rawNotifications.take(MAX_RAW_NOTIFICATIONS - 1).forEach(::add)
+            },
+        )
+    }
 
     fun markLifecycle(state: NotificationLifecycleState, change: NotificationMeaningfulChange?) = update { current ->
         current.copy(
