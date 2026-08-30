@@ -5,6 +5,7 @@ import com.kareem.secondbrain.domain.CaptureCommand
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -34,11 +35,7 @@ class RelayRawSourceLedger private constructor(private val file: File) {
         lifecycle: NotificationLifecycleDecision,
         observedAtEpochMs: Long = System.currentTimeMillis(),
     ): String {
-        val rawId = RelayEvidenceGatewayV1.rawRecordId(
-            notificationIdentity = notificationIdentity,
-            generation = lifecycle.generation,
-            revision = lifecycle.sequence,
-        )
+        val rawId = stableId("raw", notificationIdentity, lifecycle.generation.toString(), lifecycle.sequence.toString())
         val androidMetadata = RelayV2EvidenceBuilder.parseObject(command.metadataJson)
         val record = JSONObject().apply {
             put("schema", SCHEMA)
@@ -95,7 +92,8 @@ class RelayRawSourceLedger private constructor(private val file: File) {
         }
         val records = readRecords()
         val cutoff = nowEpochMs - RETENTION_MS
-        if (records.size > MAX_RECORDS || records.firstOrNull()?.optLong("observed_at", nowEpochMs) ?: nowEpochMs < cutoff) {
+        val oldest = records.firstOrNull()?.optLong("observed_at", nowEpochMs) ?: nowEpochMs
+        if (records.size > MAX_RECORDS || oldest < cutoff) {
             rewrite(records.filter { it.optLong("observed_at", 0L) >= cutoff }.takeLast(MAX_RECORDS))
         }
     }
@@ -113,5 +111,11 @@ class RelayRawSourceLedger private constructor(private val file: File) {
             return
         }
         file.writeText(records.joinToString("\n", postfix = "\n") { it.toString() }, Charsets.UTF_8)
+    }
+
+    private fun stableId(prefix: String, vararg values: String): String {
+        val joined = values.joinToString("\u001f")
+        val digest = MessageDigest.getInstance("SHA-256").digest(joined.toByteArray(Charsets.UTF_8))
+        return prefix + "_" + digest.take(16).joinToString("") { byte -> "%02x".format(byte) }
     }
 }
