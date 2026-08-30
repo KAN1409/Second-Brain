@@ -34,6 +34,9 @@ object CortexConnectorClient {
     private const val CORTEX_PACKAGE = "com.kareem.cortex"
     private const val CORTEX_SERVICE = "com.kareem.cortex.CortexLocalBusService"
     private const val ACTION_BIND = "com.kareem.cortex.LOCAL_BUS_V1"
+    private const val CORTEX_REBUILD_PACKAGE = "com.kareem.cortex.rebuild"
+    private const val CORTEX_REBUILD_SERVICE = "com.kareem.cortex.rebuild.CortexLocalBusService"
+    private const val ACTION_BIND_REBUILD = "com.kareem.cortex.rebuild.LOCAL_BUS_V1"
     private const val PROTOCOL_V1 = "CORTEX_INGEST_V1"
     private const val CONNECTOR_ID = "second_brain"
 
@@ -252,21 +255,37 @@ object CortexConnectorClient {
     private fun ensureBound(context: Context) {
         if (remote != null || !bindActive.compareAndSet(false, true)) return
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)
-        try {
-            val intent = Intent(ACTION_BIND).apply { component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE) }
-            if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
-                bindActive.set(false)
-                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-                markFailureForPending("Cortex Local Bus bind was rejected; durable event retained")
-                scheduleReconnect()
+
+        // Prefer the fresh Cortex rebuild endpoint, while preserving the established legacy Local
+        // Bus component as a compatibility fallback. Both endpoints are explicit and bounded.
+        val endpoints = arrayOf(
+            Triple(CORTEX_REBUILD_PACKAGE, CORTEX_REBUILD_SERVICE, ACTION_BIND_REBUILD),
+            Triple(CORTEX_PACKAGE, CORTEX_SERVICE, ACTION_BIND),
+        )
+        var accepted = false
+        var lastFailure = "Cortex Local Bus endpoint unavailable"
+        for ((packageName, serviceName, action) in endpoints) {
+            try {
+                val intent = Intent(action).apply {
+                    component = ComponentName(packageName, serviceName)
+                }
+                if (context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+                    accepted = true
+                    break
+                }
+                lastFailure = "$packageName rejected the Local Bus bind"
+            } catch (t: Throwable) {
+                Log.w(TAG, "Cortex bind failed for $packageName: ${t.javaClass.simpleName}")
+                lastFailure = "$packageName bind failed: ${t.javaClass.simpleName}"
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")
+        }
+
+        if (!accepted) {
             bindActive.set(false)
             remote = null
             endpointReady = false
             RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-            markFailureForPending("Cortex bind failed: ${t.javaClass.simpleName}; durable event retained")
+            markFailureForPending("$lastFailure; durable event retained")
             scheduleReconnect()
         }
     }
