@@ -12,9 +12,11 @@ object RelayV2Protocol {
     const val SIGNAL_PROTOCOL = "CORTEX_SIGNAL_V2"
     const val V1_PROTOCOL = "CORTEX_INGEST_V1"
     const val ACTION_BRIDGE = "ACTION_BRIDGE_V1"
+    const val CAPABILITY_DISCOVERY = "CAPABILITY_DISCOVERY_V1"
     const val POLICY_FEEDBACK = "POLICY_FEEDBACK_V1"
     const val REPLAY_DIAGNOSTICS = "REPLAY_DIAGNOSTICS_V1"
     const val EVIDENCE_INTELLIGENCE = "EVIDENCE_INTELLIGENCE_V1"
+    const val EVIDENCE_GATEWAY = "EVIDENCE_GATEWAY_V1"
 
     const val MSG_INGEST_V2 = 20
     const val MSG_ACTION_REQUEST = 200
@@ -30,14 +32,17 @@ object RelayV2Protocol {
         put("NOTIFICATIONS")
         put(SIGNAL_PROTOCOL)
         put(ACTION_BRIDGE)
+        put(CAPABILITY_DISCOVERY)
         put(POLICY_FEEDBACK)
         put(REPLAY_DIAGNOSTICS)
         put(EVIDENCE_INTELLIGENCE)
+        put(EVIDENCE_GATEWAY)
     }
 
-    /** Convert a durable V1 notification event into a v2 envelope without changing event identity. */
+    /** Convert a durable V1 event into a v2 envelope without changing event identity. */
     fun fromV1(v1: JSONObject): JSONObject {
         val metadata = v1.optJSONObject("metadata") ?: JSONObject()
+        val evidence = metadata.optJSONObject("relay_evidence_envelope_v1")
         val semantic = metadata.optJSONObject("relay_semantic_v2") ?: JSONObject().apply {
             put("schema", "CORTEX_RELAY_SEMANTIC_V2")
             put("source_type", v1.optString("source_type", "NOTIFICATION"))
@@ -50,6 +55,11 @@ object RelayV2Protocol {
                 put("messages", v1.optJSONArray("messages") ?: JSONArray())
             })
         }
+        val canonicalSource = evidence?.optJSONObject("source")
+        val discoveredActions = evidence?.optJSONArray("capabilities")
+            ?: metadata.optJSONArray("relay_action_capabilities_v1")
+            ?: JSONArray()
+
         return JSONObject().apply {
             put("protocol", SIGNAL_PROTOCOL)
             put("schema", "CORTEX_RELAY_SIGNAL_V2")
@@ -57,18 +67,23 @@ object RelayV2Protocol {
             put("connector_id", v1.optString("connector_id", "second_brain"))
             put("occurred_at", v1.optLong("occurred_at"))
             put("source", JSONObject().apply {
-                put("type", v1.optString("source_type", "NOTIFICATION"))
-                put("package", v1.optString("source_package"))
+                put("type", canonicalSource?.optString("adapter")?.takeIf(String::isNotBlank)
+                    ?: v1.optString("source_type", "NOTIFICATION"))
+                put("package", canonicalSource?.opt("package") ?: v1.optString("source_package"))
+                put("mechanism", canonicalSource?.optString("mechanism")?.takeIf(String::isNotBlank)
+                    ?: "LOCAL_BUS_COMPATIBILITY")
                 put("notification_key", v1.optString("notification_key"))
             })
             put("semantic", JSONObject(semantic.toString()))
-            put("action_capabilities", metadata.optJSONArray("relay_action_capabilities_v1") ?: JSONArray())
+            if (evidence != null) put("evidence", JSONObject(evidence.toString()))
+            put("action_capabilities", JSONArray(discoveredActions.toString()))
             metadata.optJSONObject("relay_evidence_intelligence_v1")?.let {
                 put("evidence_intelligence", JSONObject(it.toString()))
             }
             put("compatibility", JSONObject().apply {
                 put("v1_protocol", V1_PROTOCOL)
                 put("v1_event_id", v1.optString("event_id"))
+                put("event_identity_preserved", true)
             })
         }
     }
