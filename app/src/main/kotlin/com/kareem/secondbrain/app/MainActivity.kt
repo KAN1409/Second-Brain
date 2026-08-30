@@ -6,14 +6,6 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,10 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
 import com.kareem.secondbrain.capture.android.connector.RelaySystemTestInput
@@ -105,74 +94,62 @@ private fun CortexRelayRoot(
         initial = CaptureState(CaptureMode.RUNNING),
     )
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        RelayDashboardScreen(
-            captureState = captureState,
-            access = access,
-            onToggleCapture = {
+    RelayDashboardScreen(
+        captureState = captureState,
+        access = access,
+        onToggleCapture = {
+            scope.launch {
+                captureRepository.setCaptureMode(
+                    if (captureState.mode == CaptureMode.RUNNING) CaptureMode.PAUSED else CaptureMode.RUNNING,
+                )
+            }
+        },
+        onNotificationAccess = openNotificationAccess,
+        onAccessibilityAccess = openAccessibilityAccess,
+        onUsageAccess = openUsageAccess,
+        onReplayEvidence = {
+            val shared = runCatching { RelayReplayExporter.replayLatestAndShare(context.applicationContext) }
+                .getOrDefault(false)
+            if (!shared) {
+                Toast.makeText(context, "No forensic evidence is available to replay yet", Toast.LENGTH_SHORT).show()
+            }
+        },
+        onRunSystemTest = {
+            if (!testRunning) {
                 scope.launch {
-                    captureRepository.setCaptureMode(
-                        if (captureState.mode == CaptureMode.RUNNING) CaptureMode.PAUSED else CaptureMode.RUNNING,
-                    )
-                }
-            },
-            onNotificationAccess = openNotificationAccess,
-            onAccessibilityAccess = openAccessibilityAccess,
-            onUsageAccess = openUsageAccess,
-        )
-
-        Column(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.End,
-        ) {
-            OutlinedButton(
-                onClick = {
-                    val shared = runCatching { RelayReplayExporter.replayLatestAndShare(context.applicationContext) }
-                        .getOrDefault(false)
-                    if (!shared) {
-                        Toast.makeText(context, "No forensic evidence is available to replay yet", Toast.LENGTH_SHORT).show()
-                    }
-                },
-            ) { Text("Replay latest evidence") }
-
-            Button(
-                onClick = {
-                    if (testRunning) return@Button
-                    scope.launch {
-                        testRunning = true
-                        try {
-                            val snapshot = RelayRuntimeDiagnostics.state.value
-                            val report = withContext(Dispatchers.IO) {
-                                val base = RelaySystemTestRunner.run(
-                                    context.applicationContext,
-                                    RelaySystemTestInput(
-                                        captureRunning = captureState.mode == CaptureMode.RUNNING,
-                                        notificationAccess = access.notificationAccess,
-                                        accessibilityAccess = access.accessibilityAccess,
-                                        usageAccess = access.usageAccess,
-                                        diagnostics = snapshot,
-                                    ),
-                                )
-                                RelayAppWideSystemTest.augment(
-                                    context = context.applicationContext,
-                                    base = base,
-                                    database = database,
-                                    access = access,
-                                    captureState = captureState,
-                                )
-                            }
-                            RelaySystemTestExporter.share(
+                    testRunning = true
+                    try {
+                        val snapshot = RelayRuntimeDiagnostics.state.value
+                        val report = withContext(Dispatchers.IO) {
+                            val base = RelaySystemTestRunner.run(
                                 context.applicationContext,
-                                report,
-                                RelayRuntimeDiagnostics.state.value,
+                                RelaySystemTestInput(
+                                    captureRunning = captureState.mode == CaptureMode.RUNNING,
+                                    notificationAccess = access.notificationAccess,
+                                    accessibilityAccess = access.accessibilityAccess,
+                                    usageAccess = access.usageAccess,
+                                    diagnostics = snapshot,
+                                ),
                             )
-                        } finally {
-                            testRunning = false
+                            RelayAppWideSystemTest.augment(
+                                context = context.applicationContext,
+                                base = base,
+                                database = database,
+                                access = access,
+                                captureState = captureState,
+                            )
                         }
+                        RelaySystemTestExporter.share(
+                            context.applicationContext,
+                            report,
+                            RelayRuntimeDiagnostics.state.value,
+                        )
+                    } finally {
+                        testRunning = false
                     }
-                },
-            ) { Text(if (testRunning) "Testing…" else "Full system test") }
-        }
-    }
+                }
+            }
+        },
+        systemTestRunning = testRunning,
+    )
 }
