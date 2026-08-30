@@ -22,7 +22,7 @@ data class RelayMessageSnapshot(
     val occurredAt: Instant?,
 )
 
-/** Exact process-local notification observation before Relay dedupe/filter/routing. */
+/** Latest raw state for one Android notification identity. rawReceived still counts every callback. */
 data class RelayRawNotification(
     val id: String,
     val notificationKey: String,
@@ -62,18 +62,14 @@ data class RelayRecentSignal(
     val deliveryDetail: String = "Stored locally",
     val cortexStatus: String? = null,
     val cortexSignalId: Long = 0,
-    /** Actual Messenger.send() ingest attempts for this event in the current process. */
     val sendAttempts: Int = 0,
-    /** Retry/failure incidents attributable to this event in the current process. */
     val deliveryIssueIncidents: Int = 0,
 )
 
 data class RelayDiagnosticSnapshot(
-    /** Every NotificationListener callback observed before Relay processing. */
     val rawReceived: Long = 0,
     val captured: Long = 0,
     val sent: Long = 0,
-    /** Number of events explicitly ACKed as accepted by Cortex. */
     val forwarded: Long = 0,
     val rejected: Long = 0,
     val filtered: Long = 0,
@@ -99,13 +95,7 @@ data class RelayDiagnosticSnapshot(
     val recentSignals: List<RelayRecentSignal> = emptyList(),
 )
 
-/**
- * Process-local operational telemetry for the Relay UI.
- *
- * This is deliberately not personal memory and is not part of the Cortex wire protocol. Counters
- * and recent feeds reset when the app process restarts. Raw notifications are captured before
- * dedupe/filter/routing so the UI can show exactly what Android delivered to Relay this session.
- */
+/** Process-local operational telemetry for the Relay UI. */
 object RelayRuntimeDiagnostics {
     private const val MAX_RECENT_SIGNALS = 250
     private const val MAX_RAW_NOTIFICATIONS = 250
@@ -125,8 +115,9 @@ object RelayRuntimeDiagnostics {
     ) = update { current ->
         val now = Instant.now()
         val sequence = current.rawReceived + 1
+        val prior = current.rawNotifications.firstOrNull { it.notificationKey == notificationKey }
         val item = RelayRawNotification(
-            id = "$notificationKey:${now.toEpochMilli()}:$sequence",
+            id = prior?.id ?: "$notificationKey:${now.toEpochMilli()}:$sequence",
             notificationKey = notificationKey,
             occurredAt = occurredAt,
             receivedAt = now,
@@ -139,9 +130,15 @@ object RelayRuntimeDiagnostics {
             rawReceived = sequence,
             lastPackage = packageName,
             lastActivityAt = now,
+            // Keep the dashboard spatially stable for rapidly-updating ongoing notifications
+            // (screen recorder timers, progress surfaces, etc.). Every callback is still counted
+            // above and preserved independently by RelayRawSourceLedger.
             rawNotifications = buildList {
                 add(item)
-                current.rawNotifications.take(MAX_RAW_NOTIFICATIONS - 1).forEach(::add)
+                current.rawNotifications.asSequence()
+                    .filterNot { it.notificationKey == notificationKey }
+                    .take(MAX_RAW_NOTIFICATIONS - 1)
+                    .forEach(::add)
             },
         )
     }
@@ -220,11 +217,7 @@ object RelayRuntimeDiagnostics {
         )
     }
 
-    fun markFilterDecision(
-        eventId: String,
-        packageName: String,
-        decision: RelayFilterDecision,
-    ) = update { current ->
+    fun markFilterDecision(eventId: String, packageName: String, decision: RelayFilterDecision) = update { current ->
         val now = Instant.now()
         current.copy(
             filtered = current.filtered + if (decision.state == RelayFilterState.DROP_CONFIRMED_NOISE) 1 else 0,
