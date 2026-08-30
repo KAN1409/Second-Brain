@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -21,6 +22,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -49,6 +51,8 @@ import java.time.format.DateTimeFormatter
 private val signalTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 private val fullSignalTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd MMM yyyy · HH:mm:ss")
 
+private enum class RelayFeedPage { ALL_CAPTURED, TO_CORTEX }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RelayDashboardScreen(
@@ -58,128 +62,149 @@ internal fun RelayDashboardScreen(
     onNotificationAccess: () -> Unit,
     onAccessibilityAccess: () -> Unit,
     onUsageAccess: () -> Unit,
+    onReplayEvidence: () -> Unit,
+    onRunSystemTest: () -> Unit,
+    systemTestRunning: Boolean,
 ) {
     val diagnostics by RelayRuntimeDiagnostics.state.collectAsState()
     val context = LocalContext.current
     val scroll = rememberScrollState()
     var selectedSignal by remember { mutableStateOf<RelayRecentSignal?>(null) }
+    var page by remember { mutableStateOf(RelayFeedPage.ALL_CAPTURED) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text(text = "Cortex Relay", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(
-            text = "Captures phone evidence and delivers it to Cortex",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        StatusCard(
-            title = "Capture",
-            rows = listOf(
-                "Status" to if (captureState.mode == CaptureMode.RUNNING) "Running" else "Paused",
-                "Notifications" to if (captureState.notificationListenerConnected && access.notificationAccess) "Listening" else "Needs attention",
-            ),
-        )
-
-        StatusCard(
-            title = "Cortex",
-            rows = listOf(
-                "Connection" to when (diagnostics.connectionState) {
-                    RelayConnectionState.CONNECTED -> "Ready"
-                    RelayConnectionState.CONNECTING -> "Connecting"
-                    RelayConnectionState.DISCONNECTED -> "Disconnected"
-                },
-                "Last response" to cortexResponseLabel(diagnostics.lastCortexStatus),
-                "Last Cortex signal" to diagnostics.lastCortexSignalId.takeIf { it > 0 }?.let { "#$it" }.orEmpty().ifEmpty { "—" },
-            ),
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("This session", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                MetricRow("Captured", diagnostics.captured.toString())
-                MetricRow("Send attempts", diagnostics.sent.toString())
-                MetricRow("Delivered to Cortex", diagnostics.forwarded.toString())
-                MetricRow("Rejected by Cortex", diagnostics.rejected.toString())
-                MetricRow("Filtered as confirmed noise", diagnostics.filtered.toString())
-                MetricRow("Waiting / in flight", diagnostics.waiting.toString())
-                MetricRow("Retries / delivery issues", diagnostics.failedRetries.toString())
-                if (diagnostics.lifecycleUpdated > 0 || diagnostics.lifecycleRemoved > 0) {
-                    MetricRow(
-                        "Lifecycle P / U / R",
-                        "${diagnostics.lifecyclePosted} / ${diagnostics.lifecycleUpdated} / ${diagnostics.lifecycleRemoved}",
-                    )
-                }
-                OutlinedButton(
-                    onClick = {
-                        runCatching { RelayDiagnosticExporter.share(context, diagnostics) }
-                            .onFailure { error -> Toast.makeText(context, "Diagnostic export failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Share diagnostic report") }
-            }
+    val allSignals = diagnostics.recentSignals
+    val toCortexSignals = remember(allSignals) {
+        allSignals.filter { signal ->
+            signal.filterState == RelayFilterState.FORWARD || signal.filterState == RelayFilterState.LOW_VALUE
         }
+    }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Recent signals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = "Newest first · tap any signal to see everything Relay captured",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (diagnostics.recentSignals.isEmpty()) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 18.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Cortex Relay", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "No notification signals captured in this session yet.",
+                        "Phone evidence in. Grounded signals out.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                } else {
-                    val visibleSignals = diagnostics.recentSignals.take(12)
-                    visibleSignals.forEachIndexed { index, signal ->
-                        RecentSignalRow(signal = signal, onClick = { selectedSignal = signal })
-                        if (index < visibleSignals.lastIndex) HorizontalDivider()
+                }
+                StatusPill(
+                    text = when {
+                        captureState.mode != CaptureMode.RUNNING -> "Paused"
+                        diagnostics.connectionState == RelayConnectionState.CONNECTED -> "Ready"
+                        diagnostics.connectionState == RelayConnectionState.CONNECTING -> "Connecting"
+                        else -> "Offline"
+                    },
+                )
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Live pipeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowMetric("Captured", diagnostics.captured.toString(), Modifier.weight(1f))
+                        FlowMetric("To Cortex", toCortexSignals.size.toString(), Modifier.weight(1f))
+                        FlowMetric("Filtered", diagnostics.filtered.toString(), Modifier.weight(1f))
+                    }
+                    HorizontalDivider()
+                    MetricRow("Notification listener", if (captureState.notificationListenerConnected && access.notificationAccess) "Listening" else "Needs access")
+                    MetricRow(
+                        "Cortex",
+                        when (diagnostics.connectionState) {
+                            RelayConnectionState.CONNECTED -> "Connected · ${cortexResponseLabel(diagnostics.lastCortexStatus)}"
+                            RelayConnectionState.CONNECTING -> "Connecting"
+                            RelayConnectionState.DISCONNECTED -> "Disconnected"
+                        },
+                    )
+                    diagnostics.lastCortexSignalId.takeIf { it > 0 }?.let { MetricRow("Last signal", "#$it") }
+                    if (diagnostics.waiting > 0) MetricRow("Waiting / in flight", diagnostics.waiting.toString())
+                }
+            }
+
+            FeedPageSelector(
+                selected = page,
+                allCount = allSignals.size,
+                toCortexCount = toCortexSignals.size,
+                onSelect = { page = it },
+            )
+
+            when (page) {
+                RelayFeedPage.ALL_CAPTURED -> SignalFeedCard(
+                    title = "All notifications",
+                    subtitle = "Everything Relay receives, before routing decisions. Filtered noise stays visible here.",
+                    signals = allSignals,
+                    processed = false,
+                    emptyText = "No notifications captured in this session yet.",
+                    onSignal = { selectedSignal = it },
+                )
+                RelayFeedPage.TO_CORTEX -> SignalFeedCard(
+                    title = "To Cortex",
+                    subtitle = "Categorized, filtered and mechanically assessed. Only these notification signals are routed to Cortex.",
+                    signals = toCortexSignals,
+                    processed = true,
+                    emptyText = "Nothing has passed Relay's routing gate in this session yet.",
+                    onSignal = { selectedSignal = it },
+                )
+            }
+
+            diagnostics.lastError?.takeIf(String::isNotBlank)?.let { error ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Delivery issue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(error, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
-        }
 
-        diagnostics.lastError?.takeIf(String::isNotBlank)?.let { error ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Latest delivery issue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(error, style = MaterialTheme.typography.bodyMedium)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Relay controls", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Button(onClick = onToggleCapture, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (captureState.mode == CaptureMode.RUNNING) "Pause Relay" else "Resume Relay")
+                    }
+                    OutlinedButton(onClick = onRunSystemTest, enabled = !systemTestRunning, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (systemTestRunning) "Running full system test…" else "Full system test")
+                    }
+                    OutlinedButton(onClick = onReplayEvidence, modifier = Modifier.fillMaxWidth()) { Text("Replay latest evidence") }
+                    OutlinedButton(
+                        onClick = {
+                            runCatching { RelayDiagnosticExporter.share(context, diagnostics) }
+                                .onFailure { error -> Toast.makeText(context, "Diagnostic export failed: ${error.javaClass.simpleName}", Toast.LENGTH_LONG).show() }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Share diagnostic report") }
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Evidence access", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Open the affected signal above for its delivery status and Cortex response.",
+                        "Notification access is required. Accessibility and Usage add grounded screen/app context; Relay has no microphone capture.",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    OutlinedButton(onClick = onNotificationAccess, modifier = Modifier.fillMaxWidth()) { Text("Notification access") }
+                    OutlinedButton(onClick = onAccessibilityAccess, modifier = Modifier.fillMaxWidth()) { Text("Accessibility access") }
+                    OutlinedButton(onClick = onUsageAccess, modifier = Modifier.fillMaxWidth()) { Text("Usage access") }
                 }
             }
-        }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Controls", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Button(onClick = onToggleCapture, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (captureState.mode == CaptureMode.RUNNING) "Pause capture" else "Resume capture")
-                }
-                OutlinedButton(onClick = onNotificationAccess, modifier = Modifier.fillMaxWidth()) { Text("Notification access") }
-                OutlinedButton(onClick = onAccessibilityAccess, modifier = Modifier.fillMaxWidth()) { Text("Accessibility access") }
-                OutlinedButton(onClick = onUsageAccess, modifier = Modifier.fillMaxWidth()) { Text("Usage access") }
-            }
+            Text(
+                "Relay only performs grounded categorization, filtering and evidence-quality assessment. Personal importance and priority remain Cortex decisions.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
         }
-
-        Text(
-            text = "Delivered means Cortex replied for that exact signal. Sending it to Android IPC alone is not counted as delivery.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
     }
 
     selectedSignal?.let { signal ->
@@ -188,7 +213,61 @@ internal fun RelayDashboardScreen(
 }
 
 @Composable
-private fun RecentSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
+private fun FeedPageSelector(
+    selected: RelayFeedPage,
+    allCount: Int,
+    toCortexCount: Int,
+    onSelect: (RelayFeedPage) -> Unit,
+) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (selected == RelayFeedPage.ALL_CAPTURED) {
+            Button(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) {
+                Text("All · $allCount")
+            }
+        } else {
+            OutlinedButton(onClick = { onSelect(RelayFeedPage.ALL_CAPTURED) }, modifier = Modifier.weight(1f)) {
+                Text("All · $allCount")
+            }
+        }
+        if (selected == RelayFeedPage.TO_CORTEX) {
+            Button(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) {
+                Text("To Cortex · $toCortexCount")
+            }
+        } else {
+            OutlinedButton(onClick = { onSelect(RelayFeedPage.TO_CORTEX) }, modifier = Modifier.weight(1f)) {
+                Text("To Cortex · $toCortexCount")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalFeedCard(
+    title: String,
+    subtitle: String,
+    signals: List<RelayRecentSignal>,
+    processed: Boolean,
+    emptyText: String,
+    onSignal: (RelayRecentSignal) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (signals.isEmpty()) {
+                Text(emptyText, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                signals.forEachIndexed { index, signal ->
+                    SignalRow(signal = signal, processed = processed, onClick = { onSignal(signal) })
+                    if (index < signals.lastIndex) HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalRow(signal: RelayRecentSignal, processed: Boolean, onClick: () -> Unit) {
     val context = LocalContext.current
     Column(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
@@ -196,43 +275,49 @@ private fun RecentSignalRow(signal: RelayRecentSignal, onClick: () -> Unit) {
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
-                text = friendlyAppName(context, signal.packageName),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = humanDeliveryLabel(signal.deliveryState),
+                friendlyAppName(context, signal.packageName),
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                if (processed) humanRouteLabel(signal) else humanDeliveryLabel(signal.deliveryState),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (processed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         signal.title?.let { title ->
-            Text(text = title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         signal.preview?.let { preview ->
-            Text(text = preview, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(preview, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        signal.signalType?.let { type ->
-            Text(
-                text = buildString {
-                    append(humanSignalType(type))
-                    signal.lifecycleState?.let { lifecycle -> append(" · ").append(humanLifecycle(lifecycle)) }
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Text(
+            buildString {
+                append(signal.signalType?.let(::humanSignalType) ?: "Uncategorized")
+                signal.lifecycleState?.let { append(" · ").append(humanLifecycle(it)) }
+                if (processed) append(" · ").append(humanFilterLabel(signal.filterState))
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (processed) {
+            signal.filterReason?.takeIf(String::isNotBlank)?.let { reason ->
+                Text(
+                    "Assessment: $reason",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(
-                text = formatSignalTime(signal.occurredAt),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "Tap for details",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Text(formatSignalTime(signal.occurredAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Details", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -249,18 +334,14 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(friendlyAppName(context, signal.packageName), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(
-                humanDeliveryLabel(signal.deliveryState),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Text(humanDeliveryLabel(signal.deliveryState), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 fullSignalTimeFormatter.format(signal.occurredAt.atZone(ZoneId.systemDefault())),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            signal.signalType?.let { DetailRow("Type", humanSignalType(it)) }
+            signal.signalType?.let { DetailRow("Category", humanSignalType(it)) }
             signal.lifecycleState?.let { lifecycle ->
                 DetailRow(
                     "Lifecycle",
@@ -299,6 +380,16 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
             }
 
             HorizontalDivider()
+            Text("Relay assessment", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            DetailRow("Routing", humanFilterLabel(signal.filterState))
+            signal.filterReason?.let { DetailSection("Reason", it) }
+            Text(
+                "Operational evidence assessment only — Relay does not decide personal importance.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            HorizontalDivider()
             Text("Delivery", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             DetailRow("Status", humanDeliveryLabel(signal.deliveryState))
             signal.cortexStatus?.let { DetailRow("Cortex response", cortexResponseLabel(it)) }
@@ -306,11 +397,6 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
             if (signal.deliveryState != RelayDeliveryState.FORWARDED) {
                 Text(signal.deliveryDetail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
-            HorizontalDivider()
-            Text("Relay decision", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            DetailRow("Action", humanFilterLabel(signal.filterState))
-            signal.filterReason?.let { DetailSection("Reason", it) }
 
             OutlinedButton(onClick = { showTechnical = !showTechnical }, modifier = Modifier.fillMaxWidth()) {
                 Text(if (showTechnical) "Hide technical details" else "Show technical details")
@@ -324,20 +410,43 @@ private fun SignalDetailsSheet(signal: RelayRecentSignal, onDismiss: () -> Unit)
                         DetailRow("Relay event", "sb_${signal.eventId}")
                         signal.logicalSignalId?.let { DetailRow("Logical signal", it) }
                         signal.notificationIdentity?.let { DetailRow("Notification identity", it) }
+                        signal.conversationIdentity?.let { DetailRow("Conversation identity", it) }
                         DetailRow("Send attempts", signal.sendAttempts.toString())
                         DetailRow("Delivery issues", signal.deliveryIssueIncidents.toString())
-                        DetailRow("Protocol", "CORTEX_INGEST_V1 / Local Bus V1")
+                        DetailRow("Protocol", "CORTEX_SIGNAL_V2 · V1 fallback")
                         DetailRow("Captured", signal.capturedAt.toString())
                         DetailRow("Last updated", signal.updatedAt.toString())
                         signal.filterState?.let { DetailRow("Filter state", it.name) }
                         signal.cortexStatus?.let { DetailRow("Raw Cortex status", it) }
                         signal.metadataJson?.let { metadata ->
-                            Text("Android metadata", fontWeight = FontWeight.SemiBold)
+                            Text("Grounded metadata", fontWeight = FontWeight.SemiBold)
                             Text(prettyJson(metadata), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StatusPill(text: String) {
+    Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.secondaryContainer) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun FlowMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -355,6 +464,14 @@ private fun DetailRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(label, modifier = Modifier.weight(0.42f), color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, modifier = Modifier.weight(0.58f), fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun MetricRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -399,9 +516,9 @@ private fun packageDerivedAppName(packageName: String): String {
 }
 
 private fun humanDeliveryLabel(state: RelayDeliveryState): String = when (state) {
-    RelayDeliveryState.CAPTURED -> "Saved locally"
-    RelayDeliveryState.WAITING -> "Waiting to send"
-    RelayDeliveryState.SENT -> "Waiting for Cortex"
+    RelayDeliveryState.CAPTURED -> "Captured"
+    RelayDeliveryState.WAITING -> "Queued for Cortex"
+    RelayDeliveryState.SENT -> "Awaiting Cortex ACK"
     RelayDeliveryState.FORWARDED -> "Delivered to Cortex"
     RelayDeliveryState.FILTERED -> "Filtered · kept locally"
     RelayDeliveryState.RETRYING -> "Retrying delivery"
@@ -409,11 +526,22 @@ private fun humanDeliveryLabel(state: RelayDeliveryState): String = when (state)
     RelayDeliveryState.FAILED -> "Delivery failed"
 }
 
+private fun humanRouteLabel(signal: RelayRecentSignal): String = when (signal.deliveryState) {
+    RelayDeliveryState.FORWARDED -> "Delivered"
+    RelayDeliveryState.SENT -> "Sent"
+    RelayDeliveryState.WAITING -> "Queued"
+    RelayDeliveryState.RETRYING -> "Retrying"
+    RelayDeliveryState.REJECTED -> "Rejected"
+    RelayDeliveryState.FAILED -> "Failed"
+    RelayDeliveryState.CAPTURED -> "Approved"
+    RelayDeliveryState.FILTERED -> "Filtered"
+}
+
 private fun humanFilterLabel(state: RelayFilterState?): String = when (state) {
-    RelayFilterState.FORWARD -> "Send to Cortex"
-    RelayFilterState.LOW_VALUE -> "Low-value, still send"
-    RelayFilterState.DROP_CONFIRMED_NOISE -> "Keep locally, do not send"
-    null -> "Not decided yet"
+    RelayFilterState.FORWARD -> "Forward"
+    RelayFilterState.LOW_VALUE -> "Low-value · forward"
+    RelayFilterState.DROP_CONFIRMED_NOISE -> "Confirmed noise · keep local"
+    null -> "Pending assessment"
 }
 
 private fun humanSignalType(type: String): String = when (type) {
@@ -433,8 +561,8 @@ private fun humanSignalType(type: String): String = when (type) {
 }
 
 private fun humanLifecycle(state: String): String = when (state) {
-    "POSTED" -> "New notification"
-    "UPDATED" -> "Notification update"
+    "POSTED" -> "New"
+    "UPDATED" -> "Updated"
     "REMOVED" -> "Removed"
     else -> state.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
 }
@@ -443,31 +571,13 @@ private fun cortexResponseLabel(status: String?): String = when (status) {
     null, "" -> "—"
     "READY", "HELLO_ACCEPTED" -> "Ready"
     "ACCEPTED" -> "Accepted"
-    "DUPLICATE_ACCEPTED" -> "Accepted (already received)"
+    "DUPLICATE_ACCEPTED" -> "Accepted · already received"
     "POLICY_BLOCKED" -> "Blocked by Cortex policy"
-    "EMPTY" -> "Rejected: no usable content"
-    "INVALID_EVENT" -> "Rejected: invalid signal"
+    "EMPTY" -> "Rejected · no usable content"
+    "INVALID_EVENT" -> "Rejected · invalid signal"
     "RAW_CAPTURE_FAILED" -> "Cortex capture failed"
     "INGEST_FAILED" -> "Cortex ingest failed"
     else -> status.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
 }
 
 private fun prettyJson(raw: String): String = runCatching { JSONObject(raw).toString(2) }.getOrDefault(raw)
-
-@Composable
-private fun StatusCard(title: String, rows: List<Pair<String, String>>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            rows.forEach { (label, value) -> MetricRow(label, value) }
-        }
-    }
-}
-
-@Composable
-private fun MetricRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.Medium)
-    }
-}
