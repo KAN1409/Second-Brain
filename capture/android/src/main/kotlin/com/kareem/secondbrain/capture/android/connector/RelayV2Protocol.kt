@@ -11,7 +11,7 @@ import org.json.JSONObject
 object RelayV2Protocol {
     const val SIGNAL_PROTOCOL = "CORTEX_SIGNAL_V2"
     const val V1_PROTOCOL = "CORTEX_INGEST_V1"
-    const val ACTION_BRIDGE = "ACTION_BRIDGE_V1" // retained wire identifier; not advertised in candidate5
+    const val ACTION_BRIDGE = "ACTION_BRIDGE_V1"
     const val CAPABILITY_DISCOVERY = "CAPABILITY_DISCOVERY_V1"
     const val POLICY_FEEDBACK = "POLICY_FEEDBACK_V1"
     const val REPLAY_DIAGNOSTICS = "REPLAY_DIAGNOSTICS_V1"
@@ -31,6 +31,9 @@ object RelayV2Protocol {
     fun advertisedCapabilities(): JSONArray = JSONArray().apply {
         put("NOTIFICATIONS")
         put(SIGNAL_PROTOCOL)
+        // Preserve the existing bridge identifier for older Cortex negotiation. Candidate5's
+        // runtime gate returns EXECUTION_DEFERRED, so this is compatibility, not permission.
+        put(ACTION_BRIDGE)
         put(CAPABILITY_DISCOVERY)
         put(POLICY_FEEDBACK)
         put(REPLAY_DIAGNOSTICS)
