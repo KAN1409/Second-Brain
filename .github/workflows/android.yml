@@ -42,7 +42,9 @@ jobs:
       - name: Assemble unsigned release
         run: gradle :app:assembleRelease --stacktrace
       - name: Sign permanent candidate
+        id: sign_permanent
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.SECOND_BRAIN_KEYSTORE_B64 }}
@@ -98,7 +100,7 @@ jobs:
           sha256sum "$SIGNED"
           rm -f "$KEYSTORE" "$KS_PASS" "$KEY_PASS"
       - name: Upload permanent candidate APK
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.sign_permanent.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: Cortex-Relay-v2.0.0-candidate7-PERMANENT
