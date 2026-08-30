@@ -93,7 +93,7 @@ data class RelayDiagnosticSnapshot(
  * wire contract.
  */
 object RelayRuntimeDiagnostics {
-    private const val MAX_RECENT_SIGNALS = 20
+    private const val MAX_RECENT_SIGNALS = 250
     private const val MAX_RESTORED_IDS = 128
 
     private val lock = Any()
