@@ -78,6 +78,14 @@ class BrainNotificationListener : NotificationListenerService() {
         val importance = if (currentRanking.getRanking(sbn.key, ranking)) ranking.importance else null
         val observation = sbn.toObservation(importance)
         val baseCommand = observation.command
+        RelayRuntimeDiagnostics.markRawNotification(
+            notificationKey = sbn.key,
+            packageName = baseCommand.packageName,
+            occurredAt = baseCommand.occurredAt,
+            title = baseCommand.title,
+            body = baseCommand.expandedText ?: baseCommand.body ?: baseCommand.messages.lastOrNull()?.text,
+            conversationTitle = baseCommand.conversationTitle,
+        )
         val facts = observation.facts
         val notificationIdentity = NotificationSignalAnalyzer.notificationIdentity(facts)
         val lifecycle = lifecycleStore.observePosted(
