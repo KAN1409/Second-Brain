@@ -26,13 +26,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * Optional live tunnel into Cortex with a disk-backed delivery outbox.
  *
  * Local Bus V1 remains the compatibility baseline. Relay advertises optional v2 capabilities in an
- * additional hello field; it sends CORTEX_SIGNAL_V2 only if Cortex explicitly selects it. Existing
- * Cortex builds therefore continue receiving the validated CORTEX_INGEST_V1 event unchanged.
+ * additional hello field; it sends CORTEX_SIGNAL_V2 only if Cortex explicitly selects it. During
+ * the fresh-Cortex migration Relay prefers the rebuild endpoint when that service is installed and
+ * falls back to the legacy Cortex endpoint only when the rebuild endpoint is absent. The durable
+ * event, V1/V2 negotiation and ACK semantics are unchanged.
  */
 object CortexConnectorClient {
     private const val TAG = "CortexConnector"
-    private const val CORTEX_PACKAGE = "com.kareem.cortex"
-    private const val CORTEX_SERVICE = "com.kareem.cortex.CortexLocalBusService"
+    private const val REBUILD_PACKAGE = "com.kareem.cortex.rebuild"
+    private const val REBUILD_SERVICE = "com.kareem.cortex.rebuild.CortexLocalBusService"
+    private const val LEGACY_PACKAGE = "com.kareem.cortex"
+    private const val LEGACY_SERVICE = "com.kareem.cortex.CortexLocalBusService"
     private const val ACTION_BIND = "com.kareem.cortex.LOCAL_BUS_V1"
     private const val PROTOCOL_V1 = "CORTEX_INGEST_V1"
     private const val CONNECTOR_ID = "second_brain"
@@ -57,6 +61,17 @@ object CortexConnectorClient {
     private const val KEY_DETAIL = "detail"
     private const val KEY_SIGNAL_ID = "signal_id"
 
+    private data class CortexEndpoint(
+        val packageName: String,
+        val serviceName: String,
+        val label: String,
+    )
+
+    private val endpoints = listOf(
+        CortexEndpoint(REBUILD_PACKAGE, REBUILD_SERVICE, "fresh"),
+        CortexEndpoint(LEGACY_PACKAGE, LEGACY_SERVICE, "legacy"),
+    )
+
     private data class PendingEvent(
         val eventId: String,
         val raw: String,
@@ -79,6 +94,7 @@ object CortexConnectorClient {
     @Volatile private var inFlightSentAtElapsedMs: Long = 0L
     @Volatile private var outboxLoaded: Boolean = false
     @Volatile private var selectedProtocol: String = PROTOCOL_V1
+    @Volatile private var activeEndpoint: CortexEndpoint? = null
     private var outbox: DurableRelayOutbox? = null
 
     private lateinit var connection: ServiceConnection
@@ -249,24 +265,47 @@ object CortexConnectorClient {
         drain()
     }
 
+    /** Prefer fresh Cortex when installed; legacy remains a compatibility fallback only. */
+    private fun selectEndpoint(context: Context): CortexEndpoint? = endpoints.firstOrNull { endpoint ->
+        runCatching {
+            context.packageManager.getServiceInfo(
+                ComponentName(endpoint.packageName, endpoint.serviceName),
+                0,
+            )
+            true
+        }.getOrDefault(false)
+    }
+
     private fun ensureBound(context: Context) {
         if (remote != null || !bindActive.compareAndSet(false, true)) return
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)
+        val endpoint = selectEndpoint(context)
+        if (endpoint == null) {
+            bindActive.set(false)
+            activeEndpoint = null
+            RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
+            markFailureForPending("No Cortex Local Bus endpoint is installed; durable event retained")
+            scheduleReconnect()
+            return
+        }
+        activeEndpoint = endpoint
         try {
-            val intent = Intent(ACTION_BIND).apply { component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE) }
+            val intent = Intent(ACTION_BIND).apply {
+                component = ComponentName(endpoint.packageName, endpoint.serviceName)
+            }
             if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
                 bindActive.set(false)
                 RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-                markFailureForPending("Cortex Local Bus bind was rejected; durable event retained")
+                markFailureForPending("Cortex ${endpoint.label} Local Bus bind was rejected; durable event retained")
                 scheduleReconnect()
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")
+            Log.w(TAG, "Cortex ${endpoint.label} bind failed: ${t.javaClass.simpleName}")
             bindActive.set(false)
             remote = null
             endpointReady = false
             RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
-            markFailureForPending("Cortex bind failed: ${t.javaClass.simpleName}; durable event retained")
+            markFailureForPending("Cortex ${endpoint.label} bind failed: ${t.javaClass.simpleName}; durable event retained")
             scheduleReconnect()
         }
     }
@@ -469,6 +508,7 @@ object CortexConnectorClient {
         RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)
         val context = appContext
         if (bindActive.getAndSet(false) && context != null) runCatching { context.unbindService(connection) }
+        activeEndpoint = null
         scheduleReconnect()
     }
 
