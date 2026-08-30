@@ -1,0 +1,59 @@
+name: Relay Candidate7 Patch
+
+on:
+  push:
+    paths:
+      - '.github/workflows/relay-candidate7-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.ref == 'refs/heads/major/cortex-relay-v2'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: major/cortex-relay-v2
+          fetch-depth: 0
+      - name: Apply bounded Candidate7 fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          connector = Path('capture/android/src/main/kotlin/com/kareem/secondbrain/capture/android/connector/CortexConnectorClient.kt')
+          text = connector.read_text()
+
+          old_constants = '''    private const val CORTEX_PACKAGE = "com.kareem.cortex"\n    private const val CORTEX_SERVICE = "com.kareem.cortex.CortexLocalBusService"\n    private const val ACTION_BIND = "com.kareem.cortex.LOCAL_BUS_V1"\n'''
+          new_constants = '''    private const val CORTEX_PACKAGE = "com.kareem.cortex"\n    private const val CORTEX_SERVICE = "com.kareem.cortex.CortexLocalBusService"\n    private const val ACTION_BIND = "com.kareem.cortex.LOCAL_BUS_V1"\n    private const val CORTEX_REBUILD_PACKAGE = "com.kareem.cortex.rebuild"\n    private const val CORTEX_REBUILD_SERVICE = "com.kareem.cortex.rebuild.CortexLocalBusService"\n    private const val ACTION_BIND_REBUILD = "com.kareem.cortex.rebuild.LOCAL_BUS_V1"\n'''
+          if old_constants not in text:
+              raise SystemExit('Expected Cortex endpoint constants not found')
+          text = text.replace(old_constants, new_constants, 1)
+
+          old_bind = '''    private fun ensureBound(context: Context) {\n        if (remote != null || !bindActive.compareAndSet(false, true)) return\n        RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)\n        try {\n            val intent = Intent(ACTION_BIND).apply { component = ComponentName(CORTEX_PACKAGE, CORTEX_SERVICE) }\n            if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {\n                bindActive.set(false)\n                RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)\n                markFailureForPending("Cortex Local Bus bind was rejected; durable event retained")\n                scheduleReconnect()\n            }\n        } catch (t: Throwable) {\n            Log.w(TAG, "Cortex bind failed: ${t.javaClass.simpleName}")\n            bindActive.set(false)\n            remote = null\n            endpointReady = false\n            RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)\n            markFailureForPending("Cortex bind failed: ${t.javaClass.simpleName}; durable event retained")\n            scheduleReconnect()\n        }\n    }\n'''
+          new_bind = '''    private fun ensureBound(context: Context) {\n        if (remote != null || !bindActive.compareAndSet(false, true)) return\n        RelayRuntimeDiagnostics.markConnection(RelayConnectionState.CONNECTING)\n\n        // Prefer the fresh Cortex rebuild endpoint, while preserving the established legacy Local\n        // Bus component as a compatibility fallback. Both endpoints are explicit and bounded.\n        val endpoints = arrayOf(\n            Triple(CORTEX_REBUILD_PACKAGE, CORTEX_REBUILD_SERVICE, ACTION_BIND_REBUILD),\n            Triple(CORTEX_PACKAGE, CORTEX_SERVICE, ACTION_BIND),\n        )\n        var accepted = false\n        var lastFailure = "Cortex Local Bus endpoint unavailable"\n        for ((packageName, serviceName, action) in endpoints) {\n            try {\n                val intent = Intent(action).apply {\n                    component = ComponentName(packageName, serviceName)\n                }\n                if (context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {\n                    accepted = true\n                    break\n                }\n                lastFailure = "$packageName rejected the Local Bus bind"\n            } catch (t: Throwable) {\n                Log.w(TAG, "Cortex bind failed for $packageName: ${t.javaClass.simpleName}")\n                lastFailure = "$packageName bind failed: ${t.javaClass.simpleName}"\n            }\n        }\n\n        if (!accepted) {\n            bindActive.set(false)\n            remote = null\n            endpointReady = false\n            RelayRuntimeDiagnostics.markConnection(RelayConnectionState.DISCONNECTED)\n            markFailureForPending("$lastFailure; durable event retained")\n            scheduleReconnect()\n        }\n    }\n'''
+          if old_bind not in text:
+              raise SystemExit('Expected ensureBound block not found')
+          connector.write_text(text.replace(old_bind, new_bind, 1))
+
+          gradle = Path('app/build.gradle.kts')
+          g = gradle.read_text()
+          if 'versionCode = 25' not in g or 'versionName = "2.0.0-candidate6"' not in g:
+              raise SystemExit('Expected Candidate6 version block not found')
+          g = g.replace('versionCode = 25', 'versionCode = 26', 1)
+          g = g.replace('versionName = "2.0.0-candidate6"', 'versionName = "2.0.0-candidate7"', 1)
+          gradle.write_text(g)
+          PY
+
+          git diff --check
+          git diff -- capture/android/src/main/kotlin/com/kareem/secondbrain/capture/android/connector/CortexConnectorClient.kt app/build.gradle.kts
+      - name: Commit Candidate7 patch
+        shell: bash
+        run: |
+          git config user.name 'Cortex Relay CI'
+          git config user.email 'cortex-relay-ci@localhost'
+          git add capture/android/src/main/kotlin/com/kareem/secondbrain/capture/android/connector/CortexConnectorClient.kt app/build.gradle.kts
+          git commit -m 'fix: candidate7 safe area and Cortex rebuild Local Bus'
+          git push origin HEAD:major/cortex-relay-v2
