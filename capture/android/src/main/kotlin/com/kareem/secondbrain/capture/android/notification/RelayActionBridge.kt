@@ -65,6 +65,12 @@ object RelayActionRuntimeRegistry {
     private const val MAX_INPUT_CHARS = 4_000
     private const val SNOOZE_ONE_HOUR_MS = 60L * 60L * 1000L
     private const val MAX_COMPLETED_REQUESTS = 256
+
+    // Candidate5 deliberately ships discovery without execution. Keeping the dormant runtime
+    // registry preserves compatibility and lets a later explicitly-authorized execution release
+    // re-use the already-grounded Android capability handles without changing wire identity.
+    private const val EXECUTION_ENABLED = false
+
     private val byLogicalSignal = ConcurrentHashMap<String, RuntimeNotificationActions>()
     private val logicalByNotificationKey = ConcurrentHashMap<String, MutableSet<String>>()
     private val completedLock = Any()
@@ -148,6 +154,15 @@ object RelayActionRuntimeRegistry {
         byLogicalSignal[logicalSignalId]?.capabilities?.values?.map { it.descriptor }.orEmpty()
 
     fun execute(context: Context, request: RelayActionRequest): RelayActionResult {
+        if (!EXECUTION_ENABLED) {
+            return finish(
+                context,
+                request,
+                "EXECUTION_DEFERRED",
+                "Candidate5 is capability-discovery only; Android action execution requires a later explicitly authorized release",
+            )
+        }
+
         synchronized(completedLock) {
             completedRequests[request.requestId]?.let { prior ->
                 return prior.copy(detail = "${prior.detail} · duplicate request_id returned without re-execution")
