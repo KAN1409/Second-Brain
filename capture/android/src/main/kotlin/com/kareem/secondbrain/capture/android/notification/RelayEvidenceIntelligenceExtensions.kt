@@ -17,8 +17,22 @@ fun CaptureCommand.Notification.withEvidenceIntelligence(envelope: JSONObject): 
 
     // Candidate5 adds the source-agnostic canonical EvidenceEnvelope while preserving every
     // existing V1/V2 field. Raw Android source facts remain a separate forensic record.
-    RelayEvidenceGatewayV1.attachNotification(this, root)
+    val canonical = RelayEvidenceGatewayV1.attachNotification(this, root)
+    markNotificationAttachmentAvailabilityUnverified(canonical)
     return copy(metadataJson = root.toString())
+}
+
+/** A Notification data URI proves a reference was observed, not that Relay can safely read bytes. */
+private fun markNotificationAttachmentAvailabilityUnverified(envelope: JSONObject) {
+    val attachments = envelope.optJSONArray("attachments") ?: return
+    for (index in 0 until attachments.length()) {
+        val item = attachments.optJSONObject(index) ?: continue
+        if (item.optString("origin") != "NOTIFICATION_METADATA") continue
+        val referencePresent = !item.isNull("content_uri") && item.optString("content_uri").isNotBlank()
+        item.put("content_reference_present", referencePresent)
+        item.put("content_available", false)
+        item.put("content_availability", "UNVERIFIED")
+    }
 }
 
 private fun attachActionCapabilityGraph(intelligence: JSONObject, actions: JSONArray) {
