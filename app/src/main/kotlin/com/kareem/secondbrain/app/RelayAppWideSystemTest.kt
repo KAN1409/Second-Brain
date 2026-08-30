@@ -1,7 +1,9 @@
 package com.kareem.secondbrain.app
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.kareem.secondbrain.capture.android.accessibility.BrainAccessibilityService
@@ -16,8 +18,6 @@ import com.kareem.secondbrain.capture.android.connector.RelayV2Protocol
 import com.kareem.secondbrain.capture.android.notification.BrainNotificationListener
 import com.kareem.secondbrain.capture.android.notification.RelayEvidenceIntelligence
 import com.kareem.secondbrain.capture.android.tile.CapturePauseTileService
-import com.kareem.secondbrain.capture.android.voice.PendingVoiceFile
-import com.kareem.secondbrain.capture.android.voice.VoiceRecordingService
 import com.kareem.secondbrain.core.database.BrainDatabase
 import com.kareem.secondbrain.core.model.CaptureAccessSnapshot
 import com.kareem.secondbrain.core.model.CaptureState
@@ -65,11 +65,22 @@ internal object RelayAppWideSystemTest {
                 BrainNotificationListener::class.java,
                 BrainAccessibilityService::class.java,
                 CapturePauseTileService::class.java,
-                VoiceRecordingService::class.java,
             )
             val missing = services.filterNot { serviceDeclared(context, it) }.map { it.simpleName }
-            if (missing.isEmpty()) pass("All capture services are present in the merged APK manifest")
+            if (missing.isEmpty()) pass("All Relay capture services are present in the merged APK manifest")
             else fail("Merged APK is missing capture services", missing.joinToString())
+        }
+
+        cases += execute("app.scope.no_voice_capture", "App/Product boundary") {
+            val requested = requestedPermissions(context)
+            if (Manifest.permission.RECORD_AUDIO !in requested) {
+                pass(
+                    "Relay has no microphone capture permission",
+                    "Voice capture belongs to Cortex; Relay remains an evidence gateway.",
+                )
+            } else {
+                fail("Relay still requests microphone permission", Manifest.permission.RECORD_AUDIO)
+            }
         }
 
         cases += execute("app.components_entrypoints", "App/Components") {
@@ -87,33 +98,6 @@ internal object RelayAppWideSystemTest {
             if (infos.any { it.state != WorkInfo.State.CANCELLED }) {
                 pass("Usage reconciliation periodic work is registered", workStateDetail(infos))
             } else fail("Usage reconciliation work is not registered", workStateDetail(infos))
-        }
-
-        cases += execute("app.work.voice_recovery", "App/WorkManager") {
-            val infos = workInfos(context, "recover-pending-voice")
-            if (infos.any { it.state != WorkInfo.State.CANCELLED }) {
-                pass("Voice recovery work is registered", workStateDetail(infos))
-            } else fail("Voice recovery work is not registered", workStateDetail(infos))
-        }
-
-        cases += execute("app.voice.staging", "App/Voice") {
-            val pending = PendingVoiceFile.list(context)
-            val malformed = pending.filter { file -> file.length() < PendingVoiceFile.WAV_HEADER_BYTES }
-            when {
-                malformed.isNotEmpty() -> warn(
-                    "Pending voice staging contains malformed files",
-                    malformed.joinToString { "${it.name}:${it.length()}" },
-                )
-                else -> pass(
-                    "Pending voice staging is readable",
-                    "pending_files=${pending.size}, with_audio=${pending.count(PendingVoiceFile::hasAudio)}",
-                )
-            }
-        }
-
-        cases += execute("app.voice.microphone_access", "App/Voice") {
-            if (access.microphoneAccess) pass("Microphone permission is granted for real voice capture")
-            else warn("Microphone permission is not granted", "Voice capture requires a user permission grant before device acceptance.")
         }
 
         cases += execute("v2.evidence_intelligence_runtime", "V2/Evidence Intelligence") {
@@ -148,12 +132,6 @@ internal object RelayAppWideSystemTest {
             "Device acceptance",
             "Real foreground-app Usage reconciliation",
             "Open another app, allow the reconciliation window to run, then verify grounded APP_ACTIVITY evidence and one coherent open app session.",
-        )
-        cases += needsRealEvent(
-            "real.voice_capture_recovery",
-            "Device acceptance",
-            "Real voice capture + recovery",
-            "Record a short voice note, verify durable staging/import/transcription scheduling, and repeat once with a process interruption during staging.",
         )
         cases += needsRealEvent(
             "real.share_ingest",
@@ -244,12 +222,13 @@ internal object RelayAppWideSystemTest {
                 "real.v2_roundtrip" -> if (
                     metrics.negotiatedProtocol == RelayV2Protocol.SIGNAL_PROTOCOL &&
                     diagnostics.forwarded > 0 &&
-                    (metrics.actionRequests > 0 || metrics.policyVersion > 0)
+                    diagnostics.lastCortexSignalId > 0 &&
+                    diagnostics.lastCortexStatus in setOf("ACCEPTED", "DUPLICATE_ACCEPTED")
                 ) {
                     promote(
                         test,
-                        "Cortex selected Signal V2 and completed V2 data/control traffic",
-                        "forwarded=${diagnostics.forwarded}, action_requests=${metrics.actionRequests}, policy_version=${metrics.policyVersion}",
+                        "Cortex selected Signal V2 and completed a correlated V2 data round-trip",
+                        "forwarded=${diagnostics.forwarded}, last_signal=${diagnostics.lastCortexSignalId}, status=${diagnostics.lastCortexStatus}",
                     )
                 } else test
 
@@ -289,6 +268,13 @@ internal object RelayAppWideSystemTest {
     private fun receiverDeclared(context: Context, clazz: Class<*>): Boolean = runCatching {
         context.packageManager.getReceiverInfo(ComponentName(context, clazz), 0)
     }.isSuccess
+
+    @Suppress("DEPRECATION")
+    private fun requestedPermissions(context: Context): Set<String> =
+        context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            .orEmpty()
+            .toSet()
 
     private fun workInfos(context: Context, uniqueName: String): List<WorkInfo> =
         WorkManager.getInstance(context)
