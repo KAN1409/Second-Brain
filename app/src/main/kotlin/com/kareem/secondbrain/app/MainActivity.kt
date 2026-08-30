@@ -6,6 +6,9 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -13,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.lifecycleScope
 import com.kareem.secondbrain.capture.android.connector.RelayRuntimeDiagnostics
@@ -94,62 +98,71 @@ private fun CortexRelayRoot(
         initial = CaptureState(CaptureMode.RUNNING),
     )
 
-    RelayDashboardScreen(
-        captureState = captureState,
-        access = access,
-        onToggleCapture = {
-            scope.launch {
-                captureRepository.setCaptureMode(
-                    if (captureState.mode == CaptureMode.RUNNING) CaptureMode.PAUSED else CaptureMode.RUNNING,
-                )
-            }
-        },
-        onNotificationAccess = openNotificationAccess,
-        onAccessibilityAccess = openAccessibilityAccess,
-        onUsageAccess = openUsageAccess,
-        onReplayEvidence = {
-            val shared = runCatching { RelayReplayExporter.replayLatestAndShare(context.applicationContext) }
-                .getOrDefault(false)
-            if (!shared) {
-                Toast.makeText(context, "No forensic evidence is available to replay yet", Toast.LENGTH_SHORT).show()
-            }
-        },
-        onRunSystemTest = {
-            if (!testRunning) {
+    // Android 15+ enforces edge-to-edge for modern targets. Keep the whole Relay dashboard inside
+    // safe drawing insets so the header never sits under the clock, camera cutout, battery icons or
+    // gesture/navigation area on Samsung and other devices.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+    ) {
+        RelayDashboardScreen(
+            captureState = captureState,
+            access = access,
+            onToggleCapture = {
                 scope.launch {
-                    testRunning = true
-                    try {
-                        val snapshot = RelayRuntimeDiagnostics.state.value
-                        val report = withContext(Dispatchers.IO) {
-                            val base = RelaySystemTestRunner.run(
+                    captureRepository.setCaptureMode(
+                        if (captureState.mode == CaptureMode.RUNNING) CaptureMode.PAUSED else CaptureMode.RUNNING,
+                    )
+                }
+            },
+            onNotificationAccess = openNotificationAccess,
+            onAccessibilityAccess = openAccessibilityAccess,
+            onUsageAccess = openUsageAccess,
+            onReplayEvidence = {
+                val shared = runCatching { RelayReplayExporter.replayLatestAndShare(context.applicationContext) }
+                    .getOrDefault(false)
+                if (!shared) {
+                    Toast.makeText(context, "No forensic evidence is available to replay yet", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onRunSystemTest = {
+                if (!testRunning) {
+                    scope.launch {
+                        testRunning = true
+                        try {
+                            val snapshot = RelayRuntimeDiagnostics.state.value
+                            val report = withContext(Dispatchers.IO) {
+                                val base = RelaySystemTestRunner.run(
+                                    context.applicationContext,
+                                    RelaySystemTestInput(
+                                        captureRunning = captureState.mode == CaptureMode.RUNNING,
+                                        notificationAccess = access.notificationAccess,
+                                        accessibilityAccess = access.accessibilityAccess,
+                                        usageAccess = access.usageAccess,
+                                        diagnostics = snapshot,
+                                    ),
+                                )
+                                RelayAppWideSystemTest.augment(
+                                    context = context.applicationContext,
+                                    base = base,
+                                    database = database,
+                                    access = access,
+                                    captureState = captureState,
+                                )
+                            }
+                            RelaySystemTestExporter.share(
                                 context.applicationContext,
-                                RelaySystemTestInput(
-                                    captureRunning = captureState.mode == CaptureMode.RUNNING,
-                                    notificationAccess = access.notificationAccess,
-                                    accessibilityAccess = access.accessibilityAccess,
-                                    usageAccess = access.usageAccess,
-                                    diagnostics = snapshot,
-                                ),
+                                report,
+                                RelayRuntimeDiagnostics.state.value,
                             )
-                            RelayAppWideSystemTest.augment(
-                                context = context.applicationContext,
-                                base = base,
-                                database = database,
-                                access = access,
-                                captureState = captureState,
-                            )
+                        } finally {
+                            testRunning = false
                         }
-                        RelaySystemTestExporter.share(
-                            context.applicationContext,
-                            report,
-                            RelayRuntimeDiagnostics.state.value,
-                        )
-                    } finally {
-                        testRunning = false
                     }
                 }
-            }
-        },
-        systemTestRunning = testRunning,
-    )
+            },
+            systemTestRunning = testRunning,
+        )
+    }
 }
