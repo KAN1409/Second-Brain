@@ -31,12 +31,19 @@ object PromptEngine {
         if ("bounded" in ids) constraints += "Infer only high-confidence missing requirements and label them as inferred."
         if ("hunt" in ids) constraints += "Actively search for important blind spots and unknown unknowns before converging."
         if ("cross_domain" in ids) constraints += "Borrow mechanisms from unrelated domains when that creates a stronger solution."
+        answers.filter { it.questionId in setOf("anti_generic", "unknowns", "constraints", "decision", "finish") }
+            .forEach { answer ->
+                constraints += "Honor the engineered ${answer.questionId.replace('_', ' ')} choice '${answer.option.label}': ${answer.option.description}"
+            }
 
         val outputContract = mutableListOf(
             "Lead with the useful result, not a transcript of internal deliberation.",
             "Expose decisive trade-offs, assumptions, and uncertainties only where they change the answer.",
             "Make the result specific to the user's seed; avoid reusable filler."
         )
+        answers.firstOrNull { it.questionId == "output" }?.let { answer ->
+            outputContract += "Honor the selected output shape '${answer.option.label}': ${answer.option.description}"
+        }
         when {
             "winner" in ids -> outputContract += "Commit to one best answer and explain the decisive reason."
             "concepts" in ids -> outputContract += "Produce exactly three materially different concepts, not cosmetic variants."
