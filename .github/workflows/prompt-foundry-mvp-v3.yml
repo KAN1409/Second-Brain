@@ -22,6 +22,7 @@ jobs:
         run: |
           base64 -d prompt-foundry/payload-v2.b64 > /tmp/prompt-foundry.zip
           unzip -oq /tmp/prompt-foundry.zip -d "$GITHUB_WORKSPACE"
+          printf 'android.useAndroidX=true\n' > prompt-foundry/gradle.properties
       - name: Assemble debug APK
         run: gradle -p prompt-foundry :app:assembleDebug --stacktrace
       - name: Upload APK
