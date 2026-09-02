@@ -6,6 +6,9 @@ on:
       - feature/prompt-foundry-v0.4
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,15 +23,27 @@ jobs:
           gradle-version: '8.10.2'
       - name: Assemble Prompt Foundry debug APK
         run: gradle -p prompt-foundry :app:assembleDebug --stacktrace
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Prompt-Foundry-0.4.0-debug
           path: prompt-foundry/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Publish downloadable dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="prompt-foundry-v0.4.0"
+          APK="prompt-foundry/app/build/outputs/apk/debug/app-debug.apk"
+          cp "$APK" /tmp/Prompt-Foundry-0.4.0-debug.apk
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" /tmp/Prompt-Foundry-0.4.0-debug.apk --clobber
+          else
+            gh release create "$TAG" /tmp/Prompt-Foundry-0.4.0-debug.apk --target "$GITHUB_SHA" --title "Prompt Foundry 0.4.0 dev" --notes "Development APK from the isolated Prompt Foundry v0.4 branch. No merge performed."
+          fi
       - name: Package source
-        run: zip -qr /tmp/Prompt-Foundry-0.4.0-source.zip prompt-foundry
-      - name: Upload source
+        run: zip -qr /tmp/Prompt-Foundry-0.4.0-source.zip prompt-foundry -x 'prompt-foundry/.gradle/*' 'prompt-foundry/app/build/*'
+      - name: Upload source artifact
         uses: actions/upload-artifact@v4
         with:
           name: Prompt-Foundry-0.4.0-source
