@@ -271,7 +271,7 @@ class MainActivity : Activity() {
 
         val chatScroll = ScrollView(this).apply { isFillViewport = true }
         val chat = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(6), dp(20), dp(14)) }
-        chatScroll.addView(chat, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        chatScroll.addView(chat, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         outer.addView(chatScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         if (chatMessages.isEmpty()) {
@@ -380,7 +380,7 @@ class MainActivity : Activity() {
             setHintTextColor(Color.rgb(112, 119, 130))
             setTextColor(TEXT)
             textSize = 15f
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(15), dp(13), dp(15), dp(13))
             background = rounded(SURFACE_2, dp(16).toFloat(), BORDER)
         }
@@ -431,7 +431,7 @@ class MainActivity : Activity() {
             setHintTextColor(Color.rgb(112, 119, 130))
             setTextColor(TEXT)
             textSize = 14f
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(14), dp(11), dp(14), dp(11))
             background = rounded(SURFACE_2, dp(15).toFloat(), BORDER)
         }
@@ -562,7 +562,7 @@ class MainActivity : Activity() {
     private fun showMemoryEditor(memory: Memory?) {
         val wrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), dp(4)) }
         val title = dialogInput("Title", memory?.title.orEmpty(), false)
-        val body = dialogInput("What do you want to remember?", memory?.body.orEmpty(), false).apply { minLines = 6; maxLines = 12; gravity = Gravity.TOP; singleLine = false }
+        val body = dialogInput("What do you want to remember?", memory?.body.orEmpty(), false).apply { minLines = 6; maxLines = 12; gravity = Gravity.TOP; setSingleLine(false) }
         val tags = dialogInput("Tags", memory?.tags.orEmpty(), false)
         wrapper.addView(field("Title", title))
         wrapper.addView(field("Memory", body))
@@ -730,7 +730,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(18), dp(20), dp(28))
         }
-        scroll.addView(column, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        scroll.addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return scroll to column
     }
 
