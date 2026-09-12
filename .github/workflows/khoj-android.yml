@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           APK='khoj-android/app/build/outputs/apk/debug/app-debug.apk'
           test -s "$APK"
-          aapt dump badging "$APK" | head -n 2
+          unzip -t "$APK" >/dev/null
           sha256sum "$APK"
 
       - name: Prepare artifact
