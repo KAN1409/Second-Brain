@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.kareem.khojmobile"
+    namespace = "com.kareem.khojlocal"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.kareem.khojmobile"
+        applicationId = "com.kareem.khojlocal"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "1.0.0-local"
     }
 
     compileOptions {
