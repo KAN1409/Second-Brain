@@ -27,6 +27,29 @@ class AiSettings(context: Context) {
 class CloudAiClient(private val settings: AiSettings) {
     fun answer(question: String, evidence: List<SearchHit>): String {
         require(settings.isConfigured()) { "AI endpoint is not configured" }
+        val evidenceText = evidence.take(8).joinToString("\n\n") { hit ->
+            "[memory:${hit.memory.id}] ${hit.memory.title}\n${hit.memory.body.take(5000)}"
+        }
+        val system = """
+            You are the private assistant inside Khoj Local. Answer only from the supplied local-memory evidence.
+            If the evidence is insufficient, say that clearly. Never invent facts.
+            Cite useful evidence inline using [memory:ID]. Keep the answer concise and practical.
+        """.trimIndent()
+        val user = "Question:\n$question\n\nLocal memory evidence:\n$evidenceText"
+        return request(system, user)
+    }
+
+    fun testConnection(): String {
+        require(settings.isConfigured()) { "Enter endpoint and model first" }
+        val reply = request(
+            "You are a connection test. Reply with exactly: Connected",
+            "Confirm the connection.",
+            maxTokens = 16,
+        )
+        return if (reply.isBlank()) "Connected" else "Connected • ${reply.take(80)}"
+    }
+
+    private fun request(system: String, user: String, maxTokens: Int? = null): String {
         val endpoint = normalizeEndpoint(settings.endpoint)
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -38,19 +61,10 @@ class CloudAiClient(private val settings: AiSettings) {
             if (settings.apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
         }
 
-        val evidenceText = evidence.take(8).joinToString("\n\n") { hit ->
-            "[memory:${hit.memory.id}] ${hit.memory.title}\n${hit.memory.body.take(5000)}"
-        }
-        val system = """
-            You are the private assistant inside Khoj Local. Answer only from the supplied local-memory evidence.
-            If the evidence is insufficient, say that clearly. Never invent facts.
-            Cite useful evidence inline using [memory:ID]. Keep the answer concise and practical.
-        """.trimIndent()
-        val user = "Question:\n$question\n\nLocal memory evidence:\n$evidenceText"
-
         val body = JSONObject().apply {
             put("model", settings.model)
             put("temperature", 0.2)
+            if (maxTokens != null) put("max_tokens", maxTokens)
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
                 put(JSONObject().put("role", "user").put("content", user))

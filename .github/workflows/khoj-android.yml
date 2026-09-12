@@ -33,25 +33,33 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Reconstruct native activity
+      - name: Verify native source
         shell: bash
         run: |
           set -euo pipefail
-          SRC='khoj-android/app/src/main/java/com/kareem/khojlocal'
-          cat "$SRC/.mainactivity.part1.b64" "$SRC/.mainactivity.part2.b64" "$SRC/.mainactivity.part3.b64" "$SRC/.mainactivity.part4.b64" | tr -d '\r\n' | base64 --decode > "$SRC/MainActivity.kt"
-          test -s "$SRC/MainActivity.kt"
-          grep -q 'class MainActivity' "$SRC/MainActivity.kt"
+          SRC='khoj-android/app/src/main/java/com/kareem/khojlocal/MainActivity.kt'
+          test -s "$SRC"
+          grep -q 'class MainActivity' "$SRC"
 
       - name: Build APK
         working-directory: khoj-android
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK='khoj-android/app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$APK"
+          aapt dump badging "$APK" | head -n 2
+          sha256sum "$APK"
+
       - name: Prepare artifact
-        run: cp khoj-android/app/build/outputs/apk/debug/app-debug.apk khoj-android/Khoj-Local-1.0.0.apk
+        run: cp khoj-android/app/build/outputs/apk/debug/app-debug.apk khoj-android/Khoj-Local-1.1.0.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Khoj-Local-Android-APK
-          path: khoj-android/Khoj-Local-1.0.0.apk
+          name: Khoj-Local-1.1.0-APK
+          path: khoj-android/Khoj-Local-1.1.0.apk
           if-no-files-found: error
