@@ -1,22 +1,37 @@
-# Khoj Mobile (Unofficial Android Client)
+# Khoj Local for Android
 
-A lightweight Android shell for the official Khoj web app at `https://app.khoj.dev`.
+A native, local-first Android second-brain app inspired by the open-source Khoj project. It does **not** connect to the discontinued Khoj Cloud service and does not bundle the original Khoj Python server.
 
-## Features
-- Persistent WebView cookies/session
-- File upload picker
-- Microphone and camera permission bridge for Khoj features
-- Downloads to Android Downloads
-- Handles `app.khoj.dev` deep links, including magic-login links
-- External links open in the system browser
-- No analytics or extra tracking added by this wrapper
+## v1 capabilities
 
-## Important
-This is an **unofficial** client and is not published or endorsed by the Khoj maintainers. It does not bundle the Khoj server or Khoj source code; it loads the official Khoj web application. Khoj itself is open source under AGPL-3.0: https://github.com/khoj-ai/khoj
+- Local SQLite memory store
+- Local full-text search using SQLite FTS4
+- Lightweight 384-dimensional hashed similarity vectors for fuzzy/semantic-like recall without model downloads
+- Hybrid ranking: lexical + similarity + recency
+- Offline extractive answers grounded in retrieved memories with `[memory:ID]` citations
+- Optional OpenAI-compatible chat endpoint for generative RAG
+- Manual memory create/edit/delete
+- Android Share target for text and files
+- Multi-file import through the Android document picker
+- Plain-text/Markdown/JSON/XML/HTML/YAML/log/source-code extraction
+- Binary attachment preservation in app-private storage
+- Markdown export of the local memory library
+- Dark native UI with Home, Ask, Search, Library and Settings
 
-Google OAuth may reject embedded WebViews. If that happens, use Khoj's email/magic-link login; `app.khoj.dev` links are routed back into this app.
+## Privacy model
 
-## Build
-`gradle :app:assembleDebug`
+Memories and imported attachments stay in app-private Android storage. No network request is made for search, retrieval, import or offline answers. If an AI endpoint is configured in Settings, only the retrieved evidence required for the current question is sent to that endpoint.
 
-Package: `com.kareem.khojmobile`
+## Current v1 limits
+
+- PDF/DOCX/XLSX/PPTX attachments are preserved but their text is not extracted yet.
+- The 384-dimensional local similarity index is a deterministic hashed-vector index, not a neural embedding model.
+- Generative AI is optional and remote/local-server based; v1 does not bundle a large on-device LLM.
+
+## Identity
+
+Package: `com.kareem.khojlocal`
+
+Version: `1.0.0-local`
+
+This is an unofficial clean-room reimplementation inspired by Khoj. Khoj itself is licensed AGPL-3.0-or-later: https://github.com/khoj-ai/khoj
